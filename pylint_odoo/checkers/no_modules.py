@@ -62,6 +62,7 @@ from pylint.interfaces import IAstroidChecker
 
 from .. import settings
 from .. import misc
+from .modules_odoo import DFTL_MANIFEST_DATA_KEYS
 
 ODOO_MSGS = {
     # C->convention R->refactor W->warning E->error F->fatal
@@ -167,17 +168,17 @@ ODOO_MSGS = {
         settings.DESC_DFLT
     ),
     'C%d08' % settings.BASE_NOMODULE_ID: (
-        'Name of compute method should starts with "_compute_"',
+        'Name of compute method should start with "_compute_"',
         'method-compute',
         settings.DESC_DFLT
     ),
     'C%d09' % settings.BASE_NOMODULE_ID: (
-        'Name of search method should starts with "_search_"',
+        'Name of search method should start with "_search_"',
         'method-search',
         settings.DESC_DFLT
     ),
     'C%d10' % settings.BASE_NOMODULE_ID: (
-        'Name of inverse method should starts with "_inverse_"',
+        'Name of inverse method should start with "_inverse_"',
         'method-inverse',
         settings.DESC_DFLT
     ),
@@ -202,6 +203,11 @@ ODOO_MSGS = {
         'attribute-string-redundant',
         settings.DESC_DFLT
     ),
+    'F%d01' % settings.BASE_NOMODULE_ID: (
+        'File "%s": "%s" not found.',
+        'resource-not-exist',
+        settings.DESC_DFLT
+    )
 }
 
 DFTL_MANIFEST_REQUIRED_KEYS = ['license']
@@ -387,7 +393,9 @@ class NoModuleChecker(BaseChecker):
                           'renamed-field-parameter'
                           )
     def visit_call(self, node):
-        if node.as_string().lower().startswith('fields.'):
+        if ('fields' == self.get_func_lib(node.func) and
+                isinstance(node.parent, astroid.Assign) and
+                isinstance(node.parent.parent, astroid.ClassDef)):
             args = misc.join_node_args_kwargs(node)
             index = 0
             field_name = ''
@@ -473,7 +481,7 @@ class NoModuleChecker(BaseChecker):
     @utils.check_messages(
         'license-allowed', 'manifest-author-string', 'manifest-deprecated-key',
         'manifest-required-author', 'manifest-required-key',
-        'manifest-version-format')
+        'manifest-version-format', 'resource-not-exist')
     def visit_dict(self, node):
         if not os.path.basename(self.linter.current_file) in \
                 settings.MANIFEST_FILES \
@@ -520,6 +528,15 @@ class NoModuleChecker(BaseChecker):
             self.add_message('manifest-version-format', node=node,
                              args=(version_format,
                                    self.config.manifest_version_format_parsed))
+
+        # Check if resource exist
+        dirname = os.path.dirname(self.linter.current_file)
+        for key in DFTL_MANIFEST_DATA_KEYS:
+            for resource in (manifest_dict.get(key) or []):
+                if os.path.isfile(os.path.join(dirname, resource)):
+                    continue
+                self.add_message('resource-not-exist', node=node,
+                                 args=(key, resource))
 
     @utils.check_messages('api-one-multi-together',
                           'copy-wo-api-one', 'api-one-deprecated',
@@ -636,6 +653,12 @@ class NoModuleChecker(BaseChecker):
         func_name = isinstance(node, astroid.Name) and node.name or \
             isinstance(node, astroid.Getattr) and node.attrname or ''
         return func_name
+
+    def get_func_lib(self, node):
+        if isinstance(node, astroid.Getattr) and \
+                isinstance(node.expr, astroid.Name):
+            return node.expr.name
+        return ""
 
     @utils.check_messages('translation-required')
     def visit_raise(self, node):

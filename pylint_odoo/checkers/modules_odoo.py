@@ -128,6 +128,12 @@ ODOO_MSGS = {
         'xml-attribute-translatable',
         settings.DESC_DFLT
     ),
+    'W%d39' % settings.BASE_OMODULE_ID: (
+        '%s Use <odoo> instead of <odoo><data> or use <odoo noupdate="1">'
+        'instead of <odoo><data noupdate="1">',
+        'deprecated-data-xml-node',
+        settings.DESC_DFLT
+    )
 }
 
 
@@ -158,6 +164,8 @@ DFTL_JSLINTRC = os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
     'examples', '.jslintrc'
 )
+DFTL_MANIFEST_DATA_KEYS = ['data', 'demo', 'demo_xml', 'init_xml', 'test',
+                           'update_xml']
 
 
 class ModuleChecker(misc.WrapperModuleChecker):
@@ -651,6 +659,22 @@ class ModuleChecker(misc.WrapperModuleChecker):
             return False
         return True
 
+    def _check_deprecated_data_xml_node(self):
+        """Check deprecated <data> xml node inside <odoo> xml node
+        :return: False if found <data> xml node inside <odoo> xml node"""
+        xml_files = self.filter_files_ext('xml')
+        self.msg_args = []
+        for xml_file in xml_files:
+            doc = self.parse_xml(os.path.join(self.module_path, xml_file))
+            odoo_nodes = doc.xpath("/odoo/data") \
+                if not isinstance(doc, basestring) else []
+            if len(odoo_nodes) == 1:
+                lineno = odoo_nodes[0].sourceline
+                self.msg_args.append(("%s:%s" % (xml_file, lineno)))
+        if self.msg_args:
+            return False
+        return True
+
     def _check_deprecated_openerp_xml_node(self):
         """Check deprecated <openerp> xml node
         :return: False if exists <openerp> node and
@@ -713,9 +737,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
 
     def _get_manifest_referenced_files(self):
         referenced_files = {}
-        data_keys = ['data', 'demo', 'demo_xml', 'init_xml', 'test',
-                     'update_xml']
-        for data_type in data_keys:
+        for data_type in DFTL_MANIFEST_DATA_KEYS:
             for fname in self.manifest_dict.get(data_type) or []:
                 referenced_files[fname] = data_type
         return referenced_files

@@ -147,7 +147,7 @@
     "brace-style": "error",
     "callback-return": "error",
     "camelcase": "off",
-    "comma-dangle": "off",
+    "comma-dangle": "error",
     "comma-spacing": "off",
     "comma-style": "error",
     "complexity": [
@@ -242,6 +242,5 @@
     "yield-star-spacing": "off",
     "yoda": "error"
   },
-  "parserOptions": {},
-  "ecmaFeatures": {}
+  "parserOptions": {}
 }
