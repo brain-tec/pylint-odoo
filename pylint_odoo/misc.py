@@ -231,7 +231,8 @@ class WrapperModuleChecker(BaseChecker):
         if fext != '.xml':
             return fnames
         info_called = [item[3] for item in inspect.stack() if
-                       'modules_odoo' in item[1]]
+                       'modules_odoo' in item[1] and
+                       item[3].startswith('_check_')]
         method_called = (info_called[0].replace(
             '_check_', '').replace('_', '-') if info_called else False)
         if method_called:
@@ -387,16 +388,16 @@ class WrapperModuleChecker(BaseChecker):
     def get_xml_redundant_module_name(self, xml_file, module=None):
         """Get xml redundant name module in xml_id of a openerp xml file
         :param xml_file: Path of file xml
-        :param model: String with record model to filter.
-                      if model is None then get all.
-                      Default None.
+        :param module: String with record model to filter.
+                       If model is None then return a empty list.
+                       Default None.
         :return: List of tuples with (string, integer) with
             (module.xml_id, lineno) found
         """
         xml_ids = []
         for record in self.get_xml_records(xml_file):
-            xml_module, xml_id = record.get('id').split('.') \
-                if '.' in record.get('id') else ['', record.get('id')]
+            ref = record.get('id', '')
+            xml_module, xml_id = ref.split('.') if '.' in ref else ['', ref]
             if module and xml_module == module:
                 xml_ids.append((xml_id, record.sourceline))
         return xml_ids
