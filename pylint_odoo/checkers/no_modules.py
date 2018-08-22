@@ -222,7 +222,7 @@ ODOO_MSGS = {
 }
 
 DFTL_MANIFEST_REQUIRED_KEYS = ['license']
-DFTL_MANIFEST_REQUIRED_AUTHORS = ['brain-tec AG'] 
+DFTL_MANIFEST_REQUIRED_AUTHORS = ['brain-tec AG']
 DFTL_MANIFEST_DEPRECATED_KEYS = ['description']
 DFTL_LICENSE_ALLOWED = [
     'AGPL-3', 'GPL-2', 'GPL-2 or any later version',
