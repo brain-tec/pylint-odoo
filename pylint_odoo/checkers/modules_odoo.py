@@ -7,6 +7,7 @@ import re
 import astroid
 import isort
 from pylint.checkers import utils
+from six import string_types
 
 from .. import misc, settings
 
@@ -128,17 +129,33 @@ ODOO_MSGS = {
         'xml-attribute-translatable',
         settings.DESC_DFLT
     ),
+    'W%d42' % settings.BASE_OMODULE_ID: (
+        '%s Deprecated <tree> xml attribute "%s"',
+        'xml-deprecated-tree-attribute',
+        settings.DESC_DFLT
+    ),
+    'W%d43' % settings.BASE_OMODULE_ID: (
+        '%s Deprecated QWeb directive "%s". Use "t-options" instead',
+        'xml-deprecated-qweb-directive',
+        settings.DESC_DFLT
+    ),
     'W%d39' % settings.BASE_OMODULE_ID: (
         '%s Use <odoo> instead of <odoo><data> or use <odoo noupdate="1">'
         'instead of <odoo><data noupdate="1">',
         'deprecated-data-xml-node',
         settings.DESC_DFLT
-    )
+    ),
+    'W%d44' % settings.BASE_OMODULE_ID: (
+        '%s The resource in in src/href contains a not valid chararter',
+        'character-not-valid-in-resource-link',
+        settings.DESC_DFLT
+    ),
 }
 
 
 DFTL_README_TMPL_URL = 'https://github.com/OCA/maintainer-tools' + \
     '/blob/master/template/module/README.rst'
+DFTL_README_FILES = ['README.rst', 'README.md', 'README.txt']
 DFTL_MIN_PRIORITY = 99
 # Files supported from manifest to convert
 # Extracted from openerp/tools/convert.py:def convert_file
@@ -164,6 +181,7 @@ DFTL_JSLINTRC = os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
     'examples', '.jslintrc'
 )
+DFLT_DEPRECATED_TREE_ATTRS = ['colors', 'fonts', 'string']
 DFTL_MANIFEST_DATA_KEYS = ['data', 'demo', 'demo_xml', 'init_xml', 'test',
                            'update_xml']
 
@@ -212,13 +230,18 @@ class ModuleChecker(misc.WrapperModuleChecker):
                      'javascript lint. You can use the environment variable '
                      '"PYLINT_ODOO_JSLINTRC" too. Default: %s' % DFTL_JSLINTRC)
         }),
+        ('deprecated_tree_attributes', {
+            'type': 'multiple_choice',
+            'metavar': '<attributes>',
+            'default': DFLT_DEPRECATED_TREE_ATTRS,
+            'choices': DFLT_DEPRECATED_TREE_ATTRS,
+            'help': 'List of deprecated list view attributes,'
+            ' separated by a comma. Valid values: %s' % ', '.join(
+                DFLT_DEPRECATED_TREE_ATTRS)
+        }),
     )
 
     class_inherit_names = []
-
-    @utils.check_messages(*(ODOO_MSGS.keys()))
-    def visit_module(self, node):
-        self.wrapper_visit_module(node)
 
     @utils.check_messages('consider-merging-classes-inherited')
     def visit_assign(self, node):
@@ -342,6 +365,8 @@ class ModuleChecker(misc.WrapperModuleChecker):
 
         ext_deps = self.manifest_dict.get('external_dependencies') or {}
         py_ext_deps = ext_deps.get('python') or []
+        if isinstance(node, astroid.ImportFrom) and (node.level or 0) >= 1:
+            return
         if module_name not in py_ext_deps and \
                 module_name.split('.')[0] not in py_ext_deps:
             self.add_message('missing-manifest-dependency', node=node,
@@ -404,11 +429,14 @@ class ModuleChecker(misc.WrapperModuleChecker):
         return True
 
     def _check_missing_readme(self):
-        """Check if exists ./README.rst file
+        """Check if exists ./README.{rst,md,txt} file
         :return: If exists return True else False
         """
         self.msg_args = (self.config.readme_template_url,)
-        return os.path.isfile(os.path.join(self.module_path, 'README.rst'))
+        for readme in DFTL_README_FILES:
+            if os.path.isfile(os.path.join(self.module_path, readme)):
+                return True
+        return False
 
     def _check_xml_syntax_error(self):
         """Check if xml file there is syntax error
@@ -418,7 +446,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         self.msg_args = []
         for xml_file in self.filter_files_ext('xml', relpath=True):
             result = self.parse_xml(os.path.join(self.module_path, xml_file))
-            if isinstance(result, basestring):
+            if isinstance(result, string_types):
                 self.msg_args.append((
                     xml_file, result.strip('\n').replace('\n', '|')))
         if self.msg_args:
@@ -441,10 +469,11 @@ class ModuleChecker(misc.WrapperModuleChecker):
             )
             all_records.setdefault(record_id, []).append(record)
         # Remove all keys which not duplicated
+        records = {}
         for key, items in all_records.items():
-            if len(items) < 2:
-                all_records.pop(key)
-        return all_records
+            if not len(items) < 2:
+                records[key] = items
+        return records
 
     def _check_duplicate_xml_record_id(self):
         """Check duplicated XML-IDs inside of the files of
@@ -509,6 +538,25 @@ class ModuleChecker(misc.WrapperModuleChecker):
             return False
         return True
 
+    def _check_character_not_valid_in_resource_link(self):
+        """The resource in in src/href contains a not valid chararter"""
+        self.msg_args = []
+        for xml_file in self.filter_files_ext('xml'):
+            doc = self.parse_xml(os.path.join(self.module_path, xml_file))
+            for name, attr in (('link', 'href'), ('script', 'src')):
+                nodes = (doc.xpath('.//%s[@%s]' % (name, attr))
+                         if not isinstance(doc, string_types) else [])
+                for node in nodes:
+                    resource = node.get(attr, '')
+                    ext = os.path.splitext(os.path.basename(resource))[1]
+                    if (resource.startswith('/') and not
+                            re.search('^[.][a-zA-Z]+$', ext)):
+                        self.msg_args.append(("%s:%s" % (xml_file,
+                                                         node.sourceline)))
+        if self.msg_args:
+            return False
+        return True
+
     def _get_duplicate_xml_fields(self, fields):
         """Get duplicated xml fields based on attribute name
         :param fields list: List of lxml.etree.Element "<field"
@@ -522,11 +570,12 @@ class ModuleChecker(misc.WrapperModuleChecker):
             if not field_xml:
                 continue
             all_fields.setdefault(
-                (field_xml, field.getparent()), []).append(field)
+                (field_xml, field.attrib.get('context'),
+                 field.attrib.get('filter_domain'),
+                 field.getparent()), []).append(field)
         # Remove all keys which not duplicated by excluding them from the
-        # returning dict
-        return dict(((field_xml_name, parent_node), nodes) for
-                    (field_xml_name, parent_node), nodes in
+        return dict(((name, context, filter_domain, parent_node), nodes) for
+                    (name, context, filter_domain, parent_node), nodes in
                     all_fields.items() if len(nodes) >= 2)
 
     def _check_duplicate_xml_fields(self):
@@ -666,9 +715,12 @@ class ModuleChecker(misc.WrapperModuleChecker):
         self.msg_args = []
         for xml_file in xml_files:
             doc = self.parse_xml(os.path.join(self.module_path, xml_file))
-            odoo_nodes = doc.xpath("/odoo/data") \
-                if not isinstance(doc, basestring) else []
-            if len(odoo_nodes) == 1:
+            odoo_nodes = doc.xpath("/odoo") \
+                if not isinstance(doc, string_types) else []
+            children, data_node = ((odoo_nodes[0].getchildren(),
+                                    odoo_nodes[0].findall('data'))
+                                   if odoo_nodes else ([], []))
+            if len(children) == 1 and len(data_node) == 1:
                 lineno = odoo_nodes[0].sourceline
                 self.msg_args.append(("%s:%s" % (xml_file, lineno)))
         if self.msg_args:
@@ -685,7 +737,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         for xml_file in xml_files:
             doc = self.parse_xml(os.path.join(self.module_path, xml_file))
             openerp_nodes = doc.xpath("/openerp") \
-                if not isinstance(doc, basestring) else []
+                if not isinstance(doc, string_types) else []
             if openerp_nodes:
                 lineno = openerp_nodes[0].sourceline
                 self.msg_args.append(("%s:%s" % (xml_file, lineno)))
@@ -706,8 +758,8 @@ class ModuleChecker(misc.WrapperModuleChecker):
                 with open(ext_file, 'rb') as fp:
                     for line in fp:
                         countline += 1
-                        line_space_trip = line.lstrip(' ')
-                        if line_space_trip != line_space_trip.lstrip('\t'):
+                        line_space_trip = line.lstrip(b' ')
+                        if line_space_trip != line_space_trip.lstrip(b'\t'):
                             self.msg_args.append(
                                 ("%s:%d" % (ext_file_rel, countline)))
         if self.msg_args:
@@ -724,12 +776,13 @@ class ModuleChecker(misc.WrapperModuleChecker):
             for ext_file_rel in self.filter_files_ext(type_file, relpath=True):
                 ext_file = os.path.join(self.module_path, ext_file_rel)
                 last_line = ''
+                # NOTE: SEEK_END just is supported with 'rb' mode for py3
                 with open(ext_file, 'rb') as fp:
                     if os.stat(ext_file).st_size > 1:
                         fp.seek(-2, os.SEEK_END)
                         last_line = fp.readline()
-                        if not (last_line.endswith('\n') or
-                                last_line.endswith('\r')):
+                        if not (last_line.endswith(b'\n') or
+                                last_line.endswith(b'\r')):
                             self.msg_args.append((ext_file_rel,))
         if self.msg_args:
             return False
@@ -742,6 +795,30 @@ class ModuleChecker(misc.WrapperModuleChecker):
                 referenced_files[fname] = data_type
         return referenced_files
 
+    def _get_xml_referenced_files(self):
+        referenced_files = {}
+        for data_type in DFTL_MANIFEST_DATA_KEYS:
+            for fname in self.manifest_dict.get(data_type) or []:
+                if not fname.endswith('.xml'):
+                    continue
+                referenced_files.update(
+                    self._get_xml_referenced_files_report(fname, data_type)
+                )
+        return referenced_files
+
+    def _get_xml_referenced_files_report(self, fname, data_type):
+        return {
+            # those files are relative to the addon path
+            os.path.join(
+                *record.attrib[attribute].split(os.sep)[1:]
+            ): data_type
+            for attribute in ['xml', 'xsl']
+            for record in self.parse_xml(
+                os.path.join(self.module_path, fname)
+            )
+            .xpath('//report[@%s]' % attribute)
+        }
+
     def _get_module_files(self):
         module_files = []
         for type_file in self.config.extfiles_convert:
@@ -753,7 +830,9 @@ class ModuleChecker(misc.WrapperModuleChecker):
         """Check if a file is not used from manifest"""
         self.msg_args = []
         module_files = set(self._get_module_files())
-        referenced_files = set(self._get_manifest_referenced_files())
+        referenced_files = set(self._get_manifest_referenced_files()).union(
+            set(self._get_xml_referenced_files())
+        )
         for no_referenced_file in (module_files - referenced_files):
             if (not no_referenced_file.startswith('static/') and
                 not (no_referenced_file.startswith('test/') or
@@ -780,3 +859,81 @@ class ModuleChecker(misc.WrapperModuleChecker):
         if self.msg_args:
             return False
         return True
+
+    def _check_xml_deprecated_tree_attribute(self):
+        """The tree-view declaration is using a deprecated attribute.
+            Example <tree string="Partners"></tree>
+        """
+        checks = [
+            {
+                'attr': 'colors',
+                'skip_versions': {'4.2', '5.0', '6.0', '6.1', '7.0', '8.0'},
+                'xpath': './/tree[@colors]',
+            },
+            {
+                'attr': 'fonts',
+                'skip_versions': {'4.2', '5.0', '6.0', '6.1', '7.0', '8.0'},
+                'xpath': './/tree[@fonts]',
+            },
+            {
+                'attr': 'string',
+                'skip_versions': {'4.2', '5.0', '6.0', '6.1', '7.0'},
+                'xpath': './/tree[@string]',
+            },
+        ]
+        valid_versions = set(
+            self.linter._all_options['valid_odoo_versions'].config
+            .valid_odoo_versions)
+
+        applicable_checks = [check for check in checks if (
+            check['attr'] in self.config.deprecated_tree_attributes and
+            bool(valid_versions - check['skip_versions']))]
+
+        self.msg_args = []
+        for xml_file in self.filter_files_ext('xml', relpath=True):
+            for record in self.get_xml_records(
+                    os.path.join(self.module_path, xml_file),
+                    model='ir.ui.view'):
+
+                for check in applicable_checks:
+                    if record.xpath(check['xpath']):
+                        self.msg_args.append((
+                            '%s:%d' % (xml_file, record.sourceline),
+                            check['attr']))
+        if self.msg_args:
+            return False
+        return True
+
+    def _check_xml_deprecated_qweb_directive(self):
+        """Check for use of deprecated QWeb directives t-*-options.
+        :return: False if deprecated directives are found, in which case
+                 self.msg_args will contain the error messages.
+        """
+        valid_versions = set(self.linter._all_options[
+            'valid_odoo_versions'].config.valid_odoo_versions)
+        if not valid_versions & {'10.0', '11.0'}:
+            return True
+
+        deprecated_directives = {
+            't-esc-options',
+            't-field-options',
+            't-raw-options',
+        }
+        directive_attrs = '|'.join('@%s' % d for d in deprecated_directives)
+        xpath = '|'.join(
+            '/%s//template//*[%s]' % (tag, directive_attrs)
+            for tag in ('odoo', 'openerp')
+        )
+
+        self.msg_args = []
+        for xml_file in self.filter_files_ext('xml', relpath=False):
+            doc = self.parse_xml(xml_file)
+            if isinstance(doc, string_types):
+                continue
+            for node in doc.xpath(xpath):
+                # Find which directive was used exactly.
+                directive = next(
+                    iter(set(node.attrib) & deprecated_directives))
+                self.msg_args.append((
+                    '%s:%d' % (xml_file, node.sourceline), directive))
+        return not bool(self.msg_args)

@@ -3,6 +3,7 @@ import os
 import stat
 import sys
 from tempfile import gettempdir
+import six
 
 import unittest
 from contextlib import contextmanager
@@ -24,7 +25,7 @@ EXPECTED_ERRORS = {
     'dangerous-view-replace-wo-priority': 5,
     'deprecated-openerp-xml-node': 5,
     'duplicate-id-csv': 2,
-    'duplicate-xml-fields': 8,
+    'duplicate-xml-fields': 9,
     'duplicate-xml-record-id': 2,
     'file-not-used': 6,
     'incoherent-interpreter-exec-perm': 3,
@@ -35,17 +36,18 @@ EXPECTED_ERRORS = {
     'manifest-deprecated-key': 1,
     'manifest-required-author': 1,
     'manifest-required-key': 1,
-    'manifest-version-format': 2,
+    'manifest-version-format': 3,
     'method-compute': 1,
     'method-inverse': 1,
     'method-required-super': 8,
     'method-search': 1,
-    'missing-import-error': 3,
+    'missing-import-error': 4,
     'missing-manifest-dependency': 2,
     'missing-newline-extrafiles': 4,
     'missing-readme': 1,
     'missing-return': 1,
     'no-utf8-coding-comment': 3,
+    'unnecessary-utf8-coding-comment': 19,
     'odoo-addons-relative-import': 4,
     'old-api7-method-defined': 2,
     'openerp-exception-warning': 3,
@@ -53,7 +55,7 @@ EXPECTED_ERRORS = {
     'rst-syntax-error': 2,
     'sql-injection': 15,
     'translation-field': 2,
-    'translation-required': 4,
+    'translation-required': 14,
     'use-vim-comment': 1,
     'wrong-tabs-instead-of-spaces': 2,
     'eval-referenced': 5,
@@ -62,8 +64,11 @@ EXPECTED_ERRORS = {
     'attribute-string-redundant': 33,
     'renamed-field-parameter': 2,
     'deprecated-data-xml-node': 5,
+    'xml-deprecated-tree-attribute': 3,
+    'xml-deprecated-qweb-directive': 2,
     'resource-not-exist': 3,
-    'website-manifest-key-not-valid-uri': 1
+    'website-manifest-key-not-valid-uri': 1,
+    'character-not-valid-in-resource-link': 2,
 }
 
 
@@ -85,7 +90,7 @@ class MainTest(unittest.TestCase):
             os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
             'test_repo')
         self.paths_modules = []
-        root, dirs, _ = os.walk(path_modules).next()
+        root, dirs, _ = six.next(os.walk(path_modules))
         for path in dirs:
             self.paths_modules.append(os.path.join(root, path))
         self.default_extra_params = [
@@ -134,11 +139,16 @@ class MainTest(unittest.TestCase):
 
     def test_25_checks_without_coverage(self):
         """All odoolint errors vs found"""
+        # Some messages can be excluded as they are only applied on certain
+        # Odoo versions (not necessarily 8.0).
+        excluded_msgs = {
+            'xml-deprecated-qweb-directive',
+        }
         extra_params = ['--valid_odoo_versions=8.0']
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         msgs_found = pylint_res.linter.stats['by_msg'].keys()
-        plugin_msgs = misc.get_plugin_msgs(pylint_res)
-        test_missed_msgs = sorted(list(set(plugin_msgs) - set(msgs_found)))
+        plugin_msgs = set(misc.get_plugin_msgs(pylint_res)) - excluded_msgs
+        test_missed_msgs = sorted(list(plugin_msgs - set(msgs_found)))
         self.assertFalse(
             test_missed_msgs,
             "Checks without test case: {test_missed_msgs}".format(
@@ -159,7 +169,8 @@ class MainTest(unittest.TestCase):
                         '--deprecated-modules=openerp.osv']
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors = pylint_res.linter.stats['by_msg']
-        self.assertEqual(real_errors.items(), [('deprecated-module', 4)])
+        self.assertListEqual(list(real_errors.items()),
+                             list([('deprecated-module', 4)]))
 
     def test_50_ignore(self):
         """Test --ignore parameter """
@@ -168,8 +179,8 @@ class MainTest(unittest.TestCase):
                         '--enable=deprecated-openerp-xml-node']
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors = pylint_res.linter.stats['by_msg']
-        self.assertEqual(real_errors.items(),
-                         [('deprecated-openerp-xml-node', 4)])
+        self.assertListEqual(list(real_errors.items()),
+                             list([('deprecated-openerp-xml-node', 4)]))
 
     def test_60_ignore_patterns(self):
         """Test --ignore-patterns parameter """
@@ -179,8 +190,8 @@ class MainTest(unittest.TestCase):
                         '--enable=deprecated-openerp-xml-node']
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors = pylint_res.linter.stats['by_msg']
-        self.assertEqual(real_errors.items(),
-                         [('deprecated-openerp-xml-node', 3)])
+        self.assertListEqual(list(real_errors.items()),
+                             list([('deprecated-openerp-xml-node', 3)]))
 
     def test_70_without_jslint_installed(self):
         """Test without jslint installed"""
@@ -227,8 +238,20 @@ class MainTest(unittest.TestCase):
                         '--enable=xml-attribute-translatable']
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors = pylint_res.linter.stats['by_msg']
-        self.assertEqual(real_errors.items(),
-                         [('xml-attribute-translatable', 1)])
+        self.assertListEqual(list(real_errors.items()),
+                             list([('xml-attribute-translatable', 1)]))
+
+    def test_100_read_version_from_manifest(self):
+        """Test the functionality to get the version from the file manifest
+        to avoid the parameter --valid_odoo_versions"""
+        modules = [mod for mod in self.paths_modules if
+                   'eleven_module' in mod or 'twelve_module' in mod]
+        extra_params = ['--disable=all', '--enable=no-utf8-coding-comment,'
+                        'unnecessary-utf8-coding-comment']
+        pylint_res = self.run_pylint(modules, extra_params)
+        real_errors = pylint_res.linter.stats['by_msg']
+        self.assertListEqual(list(real_errors.items()),
+                             list([('unnecessary-utf8-coding-comment', 2)]))
 
 
 if __name__ == '__main__':
