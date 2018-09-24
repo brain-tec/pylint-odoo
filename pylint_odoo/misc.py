@@ -5,11 +5,14 @@ import re
 import subprocess
 import inspect
 
+from distutils.version import LooseVersion
 from lxml import etree
-from pylint.checkers import BaseChecker
-from pylint.interfaces import IAstroidChecker
+from pylint.checkers import BaseChecker, BaseTokenChecker
+from pylint.interfaces import UNDEFINED
+from pylint.interfaces import IAstroidChecker, ITokenChecker
 from pylint.utils import _basename_in_blacklist_re
 from restructuredtext_lint import lint_file as rst_lint
+from six import string_types
 
 from . import settings
 
@@ -17,6 +20,11 @@ try:
     from shutil import which  # python3.x
 except ImportError:
     from whichcraft import which
+
+DFTL_VALID_ODOO_VERSIONS = [
+    '4.2', '5.0', '6.0', '6.1', '7.0', '8.0', '9.0', '10.0', '11.0', '12.0',
+]
+DFTL_MANIFEST_VERSION_FORMAT = r"({valid_odoo_versions})\.\d+\.\d+\.\d+$"
 
 
 def get_plugin_msgs(pylint_run_res):
@@ -43,23 +51,25 @@ def join_node_args_kwargs(node):
     return args
 
 
-# TODO: Change all methods here
+class PylintOdooChecker(BaseChecker):
 
-class WrapperModuleChecker(BaseChecker):
-
+    # Auto call to `process_tokens` method
     __implements__ = IAstroidChecker
 
-    node = None
-    module_path = None
-    msg_args = None
-    msg_code = None
-    msg_name_key = None
     odoo_node = None
     odoo_module_name = None
     manifest_file = None
-    module = None
     manifest_dict = None
-    is_main_odoo_module = None
+
+    def formatversion(self, string):
+        valid_odoo_versions = self.linter._all_options[
+            'valid_odoo_versions'].config.valid_odoo_versions
+        valid_odoo_versions = '|'.join(
+            map(re.escape, DFTL_VALID_ODOO_VERSIONS))
+        self.config.manifest_version_format_parsed = (
+            DFTL_MANIFEST_VERSION_FORMAT.format(
+                valid_odoo_versions=valid_odoo_versions))
+        return re.match(self.config.manifest_version_format_parsed, string)
 
     def get_manifest_file(self, node_file):
         """Get manifest file path
@@ -96,8 +106,8 @@ class WrapperModuleChecker(BaseChecker):
                     self.ext_files.setdefault(fext, []).append(fname_rel)
 
     def set_caches(self):
-        # TODO: Validate if is a odoo module before and has checks enabled
-        self.set_ext_files()
+        if self.odoo_node:
+            self.set_ext_files()
 
     def clear_caches(self):
         self.ext_files = None
@@ -105,9 +115,6 @@ class WrapperModuleChecker(BaseChecker):
     def leave_module(self, node):
         """Clear caches"""
         self.clear_caches()
-
-    def open(self):
-        self.odoo_node = None
 
     def wrapper_visit_module(self, node):
         """Call methods named with name-key from self.msgs
@@ -145,7 +152,7 @@ class WrapperModuleChecker(BaseChecker):
         self.module = os.path.basename(self.module_path)
         self.set_caches()
         for msg_code, (title, name_key, description) in \
-                sorted(self.msgs.iteritems()):
+                sorted(self.msgs.items()):
             self.msg_code = msg_code
             self.msg_name_key = name_key
             self.msg_args = None
@@ -166,13 +173,67 @@ class WrapperModuleChecker(BaseChecker):
                         node_lineno_original = node.lineno
                         msg_args_extra = self.set_extra_file(node, msg_args,
                                                              msg_code)
-                        self.add_message(msg_code, line=node.lineno, node=node,
+                        self.add_message(name_key, line=node.lineno, node=node,
                                          args=msg_args_extra)
                         node.file = node_file_original
                         node.lineno = node_lineno_original
 
+    def visit_module(self, node):
+        self.wrapper_visit_module(node)
+
+    def add_message(self, msg_id, line=None, node=None, args=None,
+                    confidence=UNDEFINED):
+        version = (self.manifest_dict.get('version')
+                   if isinstance(self.manifest_dict, dict) else '')
+        match = self.formatversion(version)
+        short_version = match.group(1) if match else ''
+        if not short_version:
+            valid_odoo_versions = self.linter._all_options[
+                'valid_odoo_versions'].config.valid_odoo_versions
+            short_version = (valid_odoo_versions[0] if
+                             len(valid_odoo_versions) == 1 else '')
+        if not self._is_version_supported(short_version, msg_id):
+            return
+        return super(PylintOdooChecker, self).add_message(
+            msg_id, line, node, args, confidence)
+
+    def _is_version_supported(self, version, name_check):
+        if not version or not hasattr(self, 'odoo_check_versions'):
+            return True
+        odoo_check_versions = self.odoo_check_versions.get(name_check, {})
+        if not odoo_check_versions:
+            return True
+        version = LooseVersion(version)
+        min_odoo_version = LooseVersion(odoo_check_versions.get(
+            'min_odoo_version', DFTL_VALID_ODOO_VERSIONS[0]))
+        max_odoo_version = LooseVersion(odoo_check_versions.get(
+            'max_odoo_version', DFTL_VALID_ODOO_VERSIONS[-1]))
+        return (min_odoo_version <= version <= max_odoo_version)
+
+
+class PylintOdooTokenChecker(BaseTokenChecker, PylintOdooChecker):
+
+    # Auto call to `process_tokens` method
+    __implements__ = (ITokenChecker, IAstroidChecker)
+
+
+# TODO: Change all methods here
+
+class WrapperModuleChecker(PylintOdooChecker):
+
+    node = None
+    module_path = None
+    msg_args = None
+    msg_code = None
+    msg_name_key = None
+    module = None
+    is_main_odoo_module = None
+
+    def open(self):
+        self.odoo_node = None
+
     def set_extra_file(self, node, msg_args, msg_code):
-        if isinstance(msg_args, basestring):
+        if isinstance(msg_args, string_types):
             msg_args = (msg_args,)
         first_arg = msg_args and msg_args[0] or ""
         fregex_str = \
@@ -231,7 +292,8 @@ class WrapperModuleChecker(BaseChecker):
         if fext != '.xml':
             return fnames
         info_called = [item[3] for item in inspect.stack() if
-                       'modules_odoo' in item[1]]
+                       'modules_odoo' in item[1] and
+                       item[3].startswith('_check_')]
         method_called = (info_called[0].replace(
             '_check_', '').replace('_', '-') if info_called else False)
         if method_called:
@@ -259,7 +321,8 @@ class WrapperModuleChecker(BaseChecker):
 
                 parser = etree.XMLParser(target=PylintCommentTarget())
                 try:
-                    skips = etree.parse(open(full_name), parser)
+                    with open(full_name, 'rb') as xml_file:
+                        skips = etree.parse(xml_file, parser)
                 except etree.XMLSyntaxError:
                     skips = []
                     pass
@@ -284,6 +347,8 @@ class WrapperModuleChecker(BaseChecker):
                                            stdout=subprocess.PIPE,
                                            stderr=subprocess.PIPE)
                 output, err = process.communicate()
+                output = output.decode('UTF-8')
+                err = err.decode('UTF-8')
                 npm_bin_path = output.strip('\n ')
                 if os.path.isdir(npm_bin_path) and not err:
                     npm_bin_paths.append(npm_bin_path)
@@ -307,8 +372,10 @@ class WrapperModuleChecker(BaseChecker):
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE)
         output, err = process.communicate()
+        output = output.decode('UTF-8')
+        err = err.decode('UTF-8')
         if process.returncode != 0 and err:
-            return []
+            output = err.replace('\n', '\\n')
         # Strip multi-line output https://github.com/eslint/eslint/issues/6810
         for old in re.findall(r"`(.*)` instead.", output, re.DOTALL):
             new = old.split('\n')[0][:20] + '...'
@@ -343,9 +410,10 @@ class WrapperModuleChecker(BaseChecker):
         if not os.path.isfile(xml_file):
             return etree.Element("__empty__")
         try:
-            doc = etree.parse(open(xml_file))
+            with open(xml_file, "rb") as f:
+                doc = etree.parse(f)
         except etree.XMLSyntaxError as xmlsyntax_error_exception:
-            return xmlsyntax_error_exception.message
+            return str(xmlsyntax_error_exception)
         return doc
 
     def get_xml_records(self, xml_file, model=None, more=None):
@@ -372,7 +440,7 @@ class WrapperModuleChecker(BaseChecker):
         doc = self.parse_xml(xml_file)
         return doc.xpath("/openerp//record" + model_filter + more_filter) + \
             doc.xpath("/odoo//record" + model_filter + more_filter) \
-            if not isinstance(doc, basestring) else []
+            if not isinstance(doc, string_types) else []
 
     def get_field_csv(self, csv_file, field='id'):
         """Get xml ids from csv file
@@ -380,23 +448,23 @@ class WrapperModuleChecker(BaseChecker):
         :param field: Field to search
         :return: List of string with field rows
         """
-        with open(csv_file, 'rb') as csvfile:
+        with open(csv_file, 'r') as csvfile:
             lines = csv.DictReader(csvfile)
             return [line[field] for line in lines if field in line]
 
     def get_xml_redundant_module_name(self, xml_file, module=None):
         """Get xml redundant name module in xml_id of a openerp xml file
         :param xml_file: Path of file xml
-        :param model: String with record model to filter.
-                      if model is None then get all.
-                      Default None.
+        :param module: String with record model to filter.
+                       If model is None then return a empty list.
+                       Default None.
         :return: List of tuples with (string, integer) with
             (module.xml_id, lineno) found
         """
         xml_ids = []
         for record in self.get_xml_records(xml_file):
-            xml_module, xml_id = record.get('id').split('.') \
-                if '.' in record.get('id') else ['', record.get('id')]
+            ref = record.get('id', '')
+            xml_module, xml_id = ref.split('.') if '.' in ref else ['', ref]
             if module and xml_module == module:
                 xml_ids.append((xml_id, record.sourceline))
         return xml_ids

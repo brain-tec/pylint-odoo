@@ -53,12 +53,11 @@ for more info visit pylint doc
 import ast
 import os
 import re
-import types
 
 import astroid
 import rfc3986
 from six import string_types
-from pylint.checkers import BaseChecker, utils
+from pylint.checkers import utils
 from pylint.interfaces import IAstroidChecker
 
 from .. import settings
@@ -164,7 +163,7 @@ ODOO_MSGS = {
         settings.DESC_DFLT
     ),
     'C%d07' % settings.BASE_NOMODULE_ID: (
-        'String parameter of raise "%s" requires translation. Use _(%s)',
+        'String parameter on "%s" requires translation. Use %s_(%s)',
         'translation-required',
         settings.DESC_DFLT
     ),
@@ -223,18 +222,15 @@ DFTL_LICENSE_ALLOWED = [
     'AGPL-3', 'GPL-2', 'GPL-2 or any later version',
     'GPL-3', 'GPL-3 or any later version', 'LGPL-3',
     'Other OSI approved licence', 'Other proprietary',
+    'OEEL-1',
 ]
 DFTL_ATTRIBUTE_DEPRECATED = [
     '_columns', '_defaults', 'length',
 ]
 DFTL_METHOD_REQUIRED_SUPER = [
     'create', 'write', 'read', 'unlink', 'copy',
-    'setUp', 'tearDown', 'default_get',
+    'setUp', 'setUpClass', 'tearDown', 'default_get',
 ]
-DFTL_VALID_ODOO_VERSIONS = [
-    '4.2', '5.0', '6.0', '6.1', '7.0', '8.0', '9.0', '10.0'
-]
-DFTL_MANIFEST_VERSION_FORMAT = r"(%(valid_odoo_versions)s)\.\d+\.\d+\.\d+"
 DFTL_CURSOR_EXPR = [
     'self.env.cr', 'self._cr',  # new api
     'self.cr',  # controllers and test
@@ -247,7 +243,7 @@ DFTL_ODOO_EXCEPTIONS = [
     'ValidationError', 'Warning',
 ]
 DFTL_NO_MISSING_RETURN = [
-    '__init__', 'setUp', 'tearDown',
+    '__init__', 'setUp', 'setUpClass', 'tearDown',
 ]
 FIELDS_METHOD = {
     'Many2many': 4,
@@ -262,7 +258,7 @@ DFTL_DEPRECATED_FIELD_PARAMETERS = [
 ]
 
 
-class NoModuleChecker(BaseChecker):
+class NoModuleChecker(misc.PylintOdooChecker):
 
     __implements__ = IAstroidChecker
 
@@ -326,9 +322,9 @@ class NoModuleChecker(BaseChecker):
         ('manifest_version_format', {
             'type': 'string',
             'metavar': '<string>',
-            'default': DFTL_MANIFEST_VERSION_FORMAT,
+            'default': misc.DFTL_MANIFEST_VERSION_FORMAT,
             'help': 'Regex to check version format in manifest file. '
-            'Use "%(valid_odoo_versions)s" to check the parameter of '
+            'Use "{valid_odoo_versions}" to check the parameter of '
             '"valid_odoo_versions"'
         }),
         ('cursor_expr', {
@@ -346,7 +342,7 @@ class NoModuleChecker(BaseChecker):
         ('valid_odoo_versions', {
             'type': 'csv',
             'metavar': '<comma separated values>',
-            'default': DFTL_VALID_ODOO_VERSIONS,
+            'default': misc.DFTL_VALID_ODOO_VERSIONS,
             'help': 'List of valid odoo versions separated by a comma.'
         }),
         ('no_missing_return', {
@@ -396,7 +392,8 @@ class NoModuleChecker(BaseChecker):
                           'method-compute', 'method-search', 'method-inverse',
                           'sql-injection',
                           'attribute-string-redundant',
-                          'renamed-field-parameter'
+                          'renamed-field-parameter',
+                          'translation-required',
                           )
     def visit_call(self, node):
         if ('fields' == self.get_func_lib(node.func) and
@@ -454,6 +451,40 @@ class NoModuleChecker(BaseChecker):
                 self.get_cursor_name(node.func) in self.config.cursor_expr:
             self.add_message('invalid-commit', node=node)
 
+        # Call the message_post()
+        if (isinstance(node, astroid.CallFunc) and
+                isinstance(node.func, astroid.Getattr) and
+                node.func.attrname == 'message_post'):
+            for arg in node.args[:2]:
+                as_string = ''
+                if (isinstance(arg, astroid.Const) or
+                        isinstance(arg, astroid.BinOp)):
+                    as_string = arg.as_string()
+                if (isinstance(arg, astroid.Call) and
+                        isinstance(arg.func, astroid.Attribute) and
+                        arg.func.attrname == 'format'):
+                    as_string = arg.func.as_string()
+                if as_string:
+                    self.add_message('translation-required', node=node,
+                                     args=('message_post', '', as_string))
+            for keyword in node.keywords or []:
+                if keyword.arg not in ('subject', 'body'):
+                    continue
+                as_string = ''
+                if ((isinstance(keyword.value, astroid.Const) and
+                     isinstance(keyword.value.value, str)) or
+                        (isinstance(keyword.value, astroid.BinOp))):
+                    as_string = keyword.value.as_string()
+                if (isinstance(keyword.value, astroid.Call) and
+                        isinstance(keyword.value.func, astroid.Attribute) and
+                        keyword.value.func.attrname == 'format'):
+                    as_string = keyword.value.func.as_string()
+                if as_string:
+                    self.add_message('translation-required', node=node,
+                                     args=('message_post',
+                                           '%s=' % keyword.arg,
+                                           as_string))
+
         # SQL Injection
         if isinstance(node, astroid.CallFunc) and node.args and \
                 isinstance(node.func, astroid.Getattr) and \
@@ -498,7 +529,7 @@ class NoModuleChecker(BaseChecker):
 
         # Check author is a string
         author = manifest_dict.get('author', '')
-        if not isinstance(author, types.StringTypes):
+        if not isinstance(author, string_types):
             self.add_message('manifest-author-string', node=node)
         else:
             # Check author required
@@ -615,7 +646,8 @@ class NoModuleChecker(BaseChecker):
             there_is_return = True
             break
         if there_is_super and not there_is_return and \
-           node.name not in self.config.no_missing_return:
+                not node.is_generator() and \
+                node.name not in self.config.no_missing_return:
             self.add_message('missing-return', node=node, args=(node.name))
 
     @utils.check_messages('openerp-exception-warning')
@@ -652,12 +684,6 @@ class NoModuleChecker(BaseChecker):
 
     def camelize(self, string):
         return re.sub(r"(?:^|_)(.)", lambda m: m.group(1).upper(), string)
-
-    def formatversion(self, string):
-        self.config.manifest_version_format_parsed = \
-            self.config.manifest_version_format % dict(
-                valid_odoo_versions='|'.join(self.config.valid_odoo_versions))
-        return re.match(self.config.manifest_version_format_parsed, string)
 
     def get_decorators_names(self, decorators):
         nodes = []
@@ -710,7 +736,7 @@ class NoModuleChecker(BaseChecker):
                 func_name in self.config.odoo_exceptions:
             self.add_message(
                 'translation-required', node=node,
-                args=(func_name, argument.as_string()))
+                args=(func_name, '', argument.as_string()))
 
     def get_cursor_name(self, node):
         expr_list = []
