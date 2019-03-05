@@ -106,14 +106,16 @@ ODOO_MSGS = {
     ),
     'W%d35' % settings.BASE_OMODULE_ID: (
         'External dependency "%s" without ImportError. More info: '
-        'https://github.com/OCA/maintainer-tools/blob/master/CONTRIBUTING.md'
+        'https://github.com/OCA/odoo-community.org/blob/master/website/'
+        'Contribution/CONTRIBUTING.rst'
         '#external-dependencies',
         'missing-import-error',
         settings.DESC_DFLT
     ),
     'W%d36' % settings.BASE_OMODULE_ID: (
         'Missing external dependency "%s" from manifest. More info: '
-        'https://github.com/OCA/maintainer-tools/blob/master/CONTRIBUTING.md'
+        'https://github.com/OCA/odoo-community.org/blob/master/website/'
+        'Contribution/CONTRIBUTING.rst'
         '#external-dependencies',
         'missing-manifest-dependency',
         settings.DESC_DFLT
@@ -241,6 +243,12 @@ class ModuleChecker(misc.WrapperModuleChecker):
         }),
     )
 
+    odoo_check_versions = {
+        'missing-import-error': {
+            'max_odoo_version': '11.0',
+        },
+    }
+
     class_inherit_names = []
 
     @utils.check_messages('consider-merging-classes-inherited')
@@ -251,7 +259,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
                 'consider-merging-classes-inherited', node.lineno):
             return
         node_left = node.targets[0]
-        if not isinstance(node_left, astroid.node_classes.AssName) or \
+        if not isinstance(node_left, astroid.node_classes.AssignName) or \
                 node_left.name not in ('_inherit', '_name') or \
                 not isinstance(node.value, astroid.node_classes.Const) or \
                 not isinstance(node.parent, astroid.ClassDef):
@@ -829,19 +837,17 @@ class ModuleChecker(misc.WrapperModuleChecker):
 
     def _check_file_not_used(self):
         """Check if a file is not used from manifest"""
-        self.msg_args = []
         module_files = set(self._get_module_files())
         referenced_files = set(self._get_manifest_referenced_files()).union(
             set(self._get_xml_referenced_files())
         )
-        for no_referenced_file in (module_files - referenced_files):
-            if (not no_referenced_file.startswith('static/') and
-                not (no_referenced_file.startswith('test/') or
-                     no_referenced_file.startswith('tests/'))):
-                self.msg_args.append((no_referenced_file,))
-        if self.msg_args:
-            return False
-        return True
+        excluded_dirs = ['static', 'test', 'tests', 'migrations']
+        no_referenced_files = [
+            f for f in (module_files - referenced_files)
+            if f.split(os.path.sep)[0] not in excluded_dirs
+        ]
+        self.msg_args = no_referenced_files
+        return not no_referenced_files
 
     def _check_xml_attribute_translatable(self):
         """The xml attribute is missing the translation="off" tag

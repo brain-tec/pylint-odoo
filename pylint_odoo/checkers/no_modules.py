@@ -117,7 +117,8 @@ ODOO_MSGS = {
     ),
     'E%d02' % settings.BASE_NOMODULE_ID: (
         'Use of cr.commit() directly - More info '
-        'https://github.com/OCA/maintainer-tools/blob/master/CONTRIBUTING.md'
+        'https://github.com/OCA/odoo-community.org/blob/master/website/'
+        'Contribution/CONTRIBUTING.rst'
         '#never-commit-the-transaction',
         'invalid-commit',
         settings.DESC_DFLT
@@ -125,7 +126,8 @@ ODOO_MSGS = {
     'E%d03' % settings.BASE_NOMODULE_ID: (
         'SQL injection risk. '
         'Use parameters if you can. - More info '
-        'https://github.com/OCA/maintainer-tools/blob/master/CONTRIBUTING.md'
+        'https://github.com/OCA/odoo-community.org/blob/master/website/'
+        'Contribution/CONTRIBUTING.rst'
         '#no-sql-injection',
         'sql-injection',
         settings.DESC_DFLT
@@ -183,6 +185,11 @@ ODOO_MSGS = {
         'method-inverse',
         settings.DESC_DFLT
     ),
+    'C%d11' % settings.BASE_NOMODULE_ID: (
+        'Manifest key development_status "%s" not allowed',
+        'development-status-allowed',
+        settings.DESC_DFLT
+    ),
     'R%d10' % settings.BASE_NOMODULE_ID: (
         'Method defined with old api version 7',
         'old-api7-method-defined',
@@ -229,6 +236,9 @@ DFTL_LICENSE_ALLOWED = [
     'GPL-3', 'GPL-3 or any later version', 'LGPL-3',
     'Other OSI approved licence', 'Other proprietary',
     'OEEL-1',
+]
+DFTL_DEVELOPMENT_STATUS_ALLOWED = [
+    'Alpha', 'Beta', 'Production/Stable', 'Mature',
 ]
 DFTL_ATTRIBUTE_DEPRECATED = [
     '_columns', '_defaults', 'length',
@@ -277,6 +287,14 @@ class NoModuleChecker(misc.PylintOdooChecker):
             'default': DFTL_MANIFEST_REQUIRED_AUTHORS,
             'help': 'Author names, at least one is required in manifest file.'
         }),
+        ('manifest_required_author', {
+            'type': 'string',
+            'metavar': '<string>',
+            'default': '',
+            'help': ('Name of author required in manifest file. '
+                     'This parameter is deprecated use '
+                     '"manifest_required_authors" instead.')
+        }),
         ('manifest_required_keys', {
             'type': 'csv',
             'metavar': '<comma separated values>',
@@ -296,6 +314,13 @@ class NoModuleChecker(misc.PylintOdooChecker):
             'metavar': '<comma separated values>',
             'default': DFTL_LICENSE_ALLOWED,
             'help': 'List of license allowed in manifest file, ' +
+                    'separated by a comma.'
+        }),
+        ('development_status_allowed', {
+            'type': 'csv',
+            'metavar': '<comma separated values>',
+            'default': DFTL_DEVELOPMENT_STATUS_ALLOWED,
+            'help': 'List of development status allowed in manifest file, ' +
                     'separated by a comma.'
         }),
         ('attribute_deprecated', {
@@ -389,7 +414,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
                      not (isinstance(node.right, astroid.Attribute) and
                           node.right.attrname.startswith('_')))
 
-        is_format = (isinstance(node, astroid.CallFunc) and
+        is_format = (isinstance(node, astroid.Call) and
                      self.get_func_name(node.func) == 'format')
 
         return is_bin_op or is_format
@@ -446,21 +471,21 @@ class NoModuleChecker(misc.PylintOdooChecker):
                             'renamed-field-parameter', node=node,
                             args=(argument.arg, deprecated[argument.arg])
                         )
-                if isinstance(argument_aux, astroid.CallFunc) and \
+                if isinstance(argument_aux, astroid.Call) and \
                         isinstance(argument_aux.func, astroid.Name) and \
                         argument_aux.func.name == '_':
                     self.add_message('translation-field', node=argument_aux)
                 index += 1
         # Check cr.commit()
-        if isinstance(node, astroid.CallFunc) and \
-                isinstance(node.func, astroid.Getattr) and \
+        if isinstance(node, astroid.Call) and \
+                isinstance(node.func, astroid.Attribute) and \
                 node.func.attrname == 'commit' and \
                 self.get_cursor_name(node.func) in self.config.cursor_expr:
             self.add_message('invalid-commit', node=node)
 
         # Call the message_post()
-        if (isinstance(node, astroid.CallFunc) and
-                isinstance(node.func, astroid.Getattr) and
+        if (isinstance(node, astroid.Call) and
+                isinstance(node.func, astroid.Attribute) and
                 node.func.attrname == 'message_post'):
             for arg in itertools.chain(node.args, node.keywords or []):
                 if isinstance(arg, astroid.Keyword):
@@ -530,8 +555,8 @@ class NoModuleChecker(misc.PylintOdooChecker):
                     args=(wrong, right))
 
         # SQL Injection
-        if isinstance(node, astroid.CallFunc) and node.args and \
-                isinstance(node.func, astroid.Getattr) and \
+        if isinstance(node, astroid.Call) and node.args and \
+                isinstance(node.func, astroid.Attribute) and \
                 node.func.attrname in ('execute', 'executemany') and \
                 self.get_cursor_name(node.func) in self.config.cursor_expr:
 
@@ -563,11 +588,11 @@ class NoModuleChecker(misc.PylintOdooChecker):
         'license-allowed', 'manifest-author-string', 'manifest-deprecated-key',
         'manifest-required-author', 'manifest-required-key',
         'manifest-version-format', 'resource-not-exist',
-        'website-manifest-key-not-valid-uri')
+        'website-manifest-key-not-valid-uri', 'development-status-allowed')
     def visit_dict(self, node):
         if not os.path.basename(self.linter.current_file) in \
                 settings.MANIFEST_FILES \
-                or not isinstance(node.parent, astroid.Discard):
+                or not isinstance(node.parent, astroid.Expr):
             return
         manifest_dict = ast.literal_eval(node.as_string())
 
@@ -578,7 +603,12 @@ class NoModuleChecker(misc.PylintOdooChecker):
         else:
             # Check author required
             authors = set([auth.strip() for auth in author.split(',')])
-            required_authors = set(self.config.manifest_required_authors)
+
+            if self.config.manifest_required_author:
+                # Support compatibility for deprecated attribute
+                required_authors = set((self.config.manifest_required_author,))
+            else:
+                required_authors = set(self.config.manifest_required_authors)
             if not (authors & required_authors):
                 # None of the required authors is present in the manifest
                 # Authors will be printed as 'author1', 'author2', ...
@@ -635,6 +665,13 @@ class NoModuleChecker(misc.PylintOdooChecker):
             self.add_message('website-manifest-key-not-valid-uri',
                              node=node, args=(website))
 
+        # Check valid development_status values
+        dev_status = manifest_dict.get('development_status')
+        if (dev_status and
+                dev_status not in self.config.development_status_allowed):
+            self.add_message('development-status-allowed',
+                             node=node, args=(dev_status,))
+
     @utils.check_messages('api-one-multi-together',
                           'copy-wo-api-one', 'api-one-deprecated',
                           'method-required-super', 'old-api7-method-defined',
@@ -669,7 +706,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
         if node.name in self.config.method_required_super:
             calls = [
                 call_func.func.name
-                for call_func in node.nodes_of_class((astroid.CallFunc,))
+                for call_func in node.nodes_of_class((astroid.Call,))
                 if isinstance(call_func.func, astroid.Name)]
             if 'super' not in calls:
                 self.add_message('method-required-super', node=node,
@@ -716,7 +753,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
     @utils.check_messages('attribute-deprecated')
     def visit_assign(self, node):
         node_left = node.targets[0]
-        if isinstance(node_left, astroid.node_classes.AssName):
+        if isinstance(node_left, astroid.AssignName):
             if node_left.name in self.config.attribute_deprecated:
                 self.add_message('attribute-deprecated',
                                  node=node_left, args=(node_left.name,))
@@ -743,11 +780,11 @@ class NoModuleChecker(misc.PylintOdooChecker):
 
     def get_func_name(self, node):
         func_name = isinstance(node, astroid.Name) and node.name or \
-            isinstance(node, astroid.Getattr) and node.attrname or ''
+            isinstance(node, astroid.Attribute) and node.attrname or ''
         return func_name
 
     def get_func_lib(self, node):
-        if isinstance(node, astroid.Getattr) and \
+        if isinstance(node, astroid.Attribute) and \
                 isinstance(node.expr, astroid.Name):
             return node.expr.name
         return ""
@@ -766,7 +803,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
             # ignore empty raise
             return
         expr = node.exc
-        if not isinstance(expr, astroid.CallFunc):
+        if not isinstance(expr, astroid.Call):
             # ignore raise without a call
             return
         if not expr.args:
@@ -774,7 +811,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
         func_name = self.get_func_name(expr.func)
 
         argument = expr.args[0]
-        if isinstance(argument, astroid.CallFunc) and \
+        if isinstance(argument, astroid.Call) and \
                 'format' == self.get_func_name(argument.func):
             argument = argument.func.expr
         elif isinstance(argument, astroid.BinOp):
@@ -790,7 +827,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
     def get_cursor_name(self, node):
         expr_list = []
         node_expr = node.expr
-        while isinstance(node_expr, astroid.Getattr):
+        while isinstance(node_expr, astroid.Attribute):
             expr_list.insert(0, node_expr.attrname)
             node_expr = node_expr.expr
         if isinstance(node_expr, astroid.Name):
