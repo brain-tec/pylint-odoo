@@ -26,12 +26,13 @@ EXPECTED_ERRORS = {
     'deprecated-openerp-xml-node': 5,
     'development-status-allowed': 1,
     'duplicate-id-csv': 2,
+    'duplicate-po-message-definition': 2,
     'duplicate-xml-fields': 9,
     'duplicate-xml-record-id': 2,
     'file-not-used': 6,
     'incoherent-interpreter-exec-perm': 3,
     'invalid-commit': 4,
-    'javascript-lint': 25,
+    'javascript-lint': 24,
     'license-allowed': 1,
     'manifest-author-string': 1,
     'manifest-deprecated-key': 1,
@@ -47,11 +48,12 @@ EXPECTED_ERRORS = {
     'missing-newline-extrafiles': 4,
     'missing-readme': 1,
     'missing-return': 1,
-    'no-utf8-coding-comment': 6,
-    'unnecessary-utf8-coding-comment': 20,
     'odoo-addons-relative-import': 4,
     'old-api7-method-defined': 2,
     'openerp-exception-warning': 3,
+    'po-syntax-error': 2,
+    'po-msgstr-variables': 6,
+    'print-used': 1,
     'redundant-modulename-xml': 1,
     'rst-syntax-error': 2,
     'sql-injection': 18,
@@ -73,6 +75,11 @@ EXPECTED_ERRORS = {
     'character-not-valid-in-resource-link': 2,
 }
 
+if six.PY3:
+    EXPECTED_ERRORS['unnecessary-utf8-coding-comment'] = 19
+else:
+    EXPECTED_ERRORS['no-utf8-coding-comment'] = 6
+
 
 @contextmanager
 def profiling(profile):
@@ -84,7 +91,8 @@ def profiling(profile):
 class MainTest(unittest.TestCase):
     def setUp(self):
         dummy_cfg = os.path.join(gettempdir(), 'nousedft.cfg')
-        open(dummy_cfg, "w").write("")
+        with open(dummy_cfg, "w") as f_dummy:
+            f_dummy.write("")
         self.default_options = [
             '--load-plugins=pylint_odoo', '--reports=no', '--msg-template='
             '"{path}:{line}: [{msg_id}({symbol}), {obj}] {msg}"',
@@ -264,6 +272,8 @@ class MainTest(unittest.TestCase):
         }
         self.assertDictEqual(real_errors, expected_errors)
 
+    @unittest.skipIf(not six.PY3, "unnecessary-utf8-coding-comment "
+                     "disabled directly from py2")
     def test_100_read_version_from_manifest(self):
         """Test the functionality to get the version from the file manifest
         to avoid the parameter --valid_odoo_versions"""

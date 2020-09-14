@@ -13,16 +13,19 @@ ODOO_MSGS = {
         'No UTF-8 coding comment found: '
         'Use `# coding: utf-8` or `# -*- coding: utf-8 -*-`',
         'no-utf8-coding-comment',
-        settings.DESC_DFLT
+        settings.DESC_DFLT,
+        {"maxversion": (3, 0)},
     ),
     'C%d02' % settings.BASE_FORMAT_ID: (
         'UTF-8 coding is not necessary',
         'unnecessary-utf8-coding-comment',
-        settings.DESC_DFLT
+        settings.DESC_DFLT,
+        {"minversion": (3, 0)},
     ),
     'W%d01' % settings.BASE_FORMAT_ID: (
         'You have a python file with execution permissions but you don\'t '
-        'have a interpreter magic comment. '
+        'have an interpreter magic comment, or a magic comment but no '
+        'execution permission. '
         'If you really needs a execution permission then add a magic comment '
         '( https://en.wikipedia.org/wiki/Shebang_(Unix) ). '
         'If you don\'t needs a execution permission then remove it with: '

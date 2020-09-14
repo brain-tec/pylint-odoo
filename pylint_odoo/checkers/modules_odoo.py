@@ -6,6 +6,8 @@ import re
 
 import astroid
 import isort
+import polib
+from collections import defaultdict
 from pylint.checkers import utils
 from six import string_types
 
@@ -152,6 +154,21 @@ ODOO_MSGS = {
         'character-not-valid-in-resource-link',
         settings.DESC_DFLT
     ),
+    'W%d47' % settings.BASE_OMODULE_ID: (
+        '%s Duplicate PO message definition "%s" in lines %s',
+        'duplicate-po-message-definition',
+        settings.DESC_DFLT
+    ),
+    'E%d12' % settings.BASE_OMODULE_ID: (
+        '%s %s',
+        'po-syntax-error',
+        settings.DESC_DFLT
+    ),
+    'W%d68' % settings.BASE_OMODULE_ID: (
+        '%s %s',
+        'po-msgstr-variables',
+        settings.DESC_DFLT
+    ),
 }
 
 
@@ -168,7 +185,7 @@ DFLT_IMPORT_NAME_WHITELIST = [
     # self-odoo
     'odoo', 'openerp',
     # Known external packages of odoo
-    'PIL', 'anybox.testing.openerp', 'argparse', 'babel',
+    'PIL', 'PyPDF2', 'anybox.testing.openerp', 'argparse', 'babel', 'chardet',
     'dateutil', 'decorator', 'docutils', 'faces', 'feedparser',
     'gdata', 'gevent', 'greenlet', 'jcconv', 'jinja2',
     'ldap', 'lxml', 'mako', 'markupsafe', 'mock', 'odf',
@@ -176,8 +193,10 @@ DFLT_IMPORT_NAME_WHITELIST = [
     'psutil', 'psycogreen', 'psycopg2', 'pyPdf', 'pychart',
     'pydot', 'pyparsing', 'pytz', 'qrcode', 'reportlab',
     'requests', 'serial', 'simplejson', 'six', 'suds',
-    'unittest2', 'usb', 'vatnumber', 'vobject', 'werkzeug',
+    'unittest2', 'urllib3', 'usb', 'vatnumber', 'vobject', 'werkzeug',
     'wsgiref', 'xlsxwriter', 'xlwt', 'yaml',
+    # OpenUpgrade migration
+    'openupgradelib'
 ]
 DFTL_JSLINTRC = os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -276,9 +295,18 @@ class ModuleChecker(misc.WrapperModuleChecker):
         node.file = self.linter.current_file
         self.inh_dup.setdefault(key, []).append(node)
 
+    def _build_whitelist_module_patterns(self):
+        known_patterns = []
+        for known_pattern in self.config.import_name_whitelist:
+            pattern = known_pattern.replace('*', '.*').replace('?', '.?')
+            known_patterns.append(re.compile('^' + pattern + '$'))
+        return known_patterns
+
     def open(self):
         """Define variables to use cache"""
         self.inh_dup = {}
+        patterns = self._build_whitelist_module_patterns()
+        self._whitelist_module_patterns = patterns
         super(ModuleChecker, self).open()
 
     def close(self):
@@ -339,6 +367,25 @@ class ModuleChecker(misc.WrapperModuleChecker):
         except:
             pass
 
+    def _is_module_name_in_whitelist(self, module_name):
+        # Try to find most specific placement instruction match (if any)
+        # (from isort place_module() method)
+        parts = module_name.split('.')
+        module_names_to_check = [
+            '.'.join(parts[:first_k])
+            for first_k in range(len(parts), 0, -1)
+        ]
+        # Check if one of the module name is part of the whitelist.
+        # For an module name such as 'anybox.testing.openerp', the
+        # modules names to check will be:
+        # ['anybox.testing.openerp', 'anybox.testing', 'anybox']
+        # Only one of them has to be in the whitelist to be accepted.
+        for module_name_to_check in module_names_to_check:
+            for pattern in self._whitelist_module_patterns:
+                if pattern.match(module_name_to_check):
+                    return True
+        return False
+
     def _check_imported_packages(self, node, module_name):
         """Check if the import node is a external dependency to validate it"""
         if not module_name:
@@ -353,10 +400,10 @@ class ModuleChecker(misc.WrapperModuleChecker):
         if self._is_absolute_import(node, module_name):
             # skip absolute imports
             return
-        isort_obj = isort.SortImports(
-            file_contents='',
-            known_standard_library=self.config.import_name_whitelist,
-        )
+        if self._is_module_name_in_whitelist(module_name):
+            # ignore whitelisted modules
+            return
+        isort_obj = isort.SortImports(file_contents='')
         import_category = isort_obj.place_module(module_name)
         if import_category not in ('FIRSTPARTY', 'THIRDPARTY'):
             # skip if is not a external library or is a white list library
@@ -377,7 +424,8 @@ class ModuleChecker(misc.WrapperModuleChecker):
         if isinstance(node, astroid.ImportFrom) and (node.level or 0) >= 1:
             return
         if module_name not in py_ext_deps and \
-                module_name.split('.')[0] not in py_ext_deps:
+                module_name.split('.')[0] not in py_ext_deps and \
+                not any(dep in module_name for dep in py_ext_deps):
             self.add_message('missing-manifest-dependency', node=node,
                              args=(module_name,))
 
@@ -408,6 +456,116 @@ class ModuleChecker(misc.WrapperModuleChecker):
                     isinstance(handler.body[0], astroid.node_classes.Pass)):
                 self.add_message('except-pass', node=handler)
 
+    def _get_po_line_number(self, po_entry):
+        """Get line number of a PO entry similar to 'msgfmt' output
+        entry.linenum returns line number of the definition of the entry
+        'msgfmt' returns line number of the 'msgid'
+        This method also gets line number of the 'msgid'
+        """
+        linenum = po_entry.linenum
+        for line in str(po_entry).split('\n'):
+            if not line.startswith('#'):
+                break
+            linenum += 1
+        return linenum
+
+    def _check_po_syntax_error(self):
+        """Check syntax error in PO files"""
+        self.msg_args = []
+        for po_file in self.filter_files_ext('po') + self.filter_files_ext('pot'):
+            try:
+                po = polib.pofile(os.path.join(self.module_path, po_file))
+            except (IOError, OSError) as oe:
+                fname = os.path.join(self.module_path, po_file)
+                msg = str(oe).replace(fname + ' ', '').strip()
+                self.msg_args.append((po_file, msg))
+                continue
+            for entry in po:
+                if entry.obsolete:
+                    continue
+                # Regex from https://github.com/odoo/odoo/blob/fa4f36bb631e82/odoo/tools/translate.py#L616  # noqa
+                match = re.match(r"(module[s]?): (\w+)", entry.comment)
+                if match:
+                    continue
+                linenum = self._get_po_line_number(entry)
+                po_fname_linenum = "%s:%d" % (po_file, linenum)
+                self.msg_args.append((
+                    po_fname_linenum, "Translation entry requires comment "
+                    "'#. module: MODULE'"))
+
+    def _check_duplicate_po_message_definition(self):
+        """Check duplicate message definition (message-id)
+        in all entries of PO files
+
+        We are not using `check_for_duplicates` parameter of polib.pofile method
+            e.g. polib.pofile(..., check_for_duplicates=True)
+        Because the output is:
+            raise ValueError('Entry "%s" already exists' % entry.msgid)
+        It doesn't show the number of lines duplicated
+        It shows the entire string of the message_id without truncating it
+            or replacing newlines
+        """
+        self.msg_args = []
+        for po_file in self.filter_files_ext('po') + self.filter_files_ext('pot'):
+            try:
+                po = polib.pofile(os.path.join(self.module_path, po_file))
+            except (IOError, OSError):
+                # If there is a syntax error, it will be covered in another check
+                continue
+            duplicated = defaultdict(list)
+            for entry in po:
+                if entry.obsolete:
+                    continue
+                # Using `set` in order to fix false red
+                # if the same entry has duplicated occurrences
+                for occurrence in set(entry.occurrences):
+                    duplicated[(hash(entry.msgid), hash(occurrence))].append(entry)
+            for entries in duplicated.values():
+                if len(entries) < 2:
+                    continue
+                linenum = self._get_po_line_number(entries[0])
+                po_fname_linenum = "%s:%d" % (po_file, linenum)
+                duplicated = ', '.join(str(self._get_po_line_number(x))
+                                       for x in entries[1:])
+                msg_id_short = re.sub(r"[\n\t]*", "", entries[0].msgid[:40]).strip()
+                if len(entries[0].msgid) > 40:
+                    msg_id_short = "%s..." % msg_id_short
+                self.msg_args.append((po_fname_linenum, msg_id_short, duplicated))
+
+    def _check_po_msgstr_variables(self):
+        """Check if 'msgid' is using 'str' variables like '%s'
+        So translation 'msgstr' must be the same number of variables too"""
+        self.msg_args = []
+        for po_file in self.filter_files_ext('po'):
+            try:
+                po = polib.pofile(os.path.join(self.module_path, po_file))
+            except (IOError, OSError):
+                # If there is a syntax error, it will be covered in another check
+                continue
+            for entry in po:
+                if entry.obsolete:
+                    continue
+                if not entry.msgstr or 'python-format' not in entry.flags:
+                    # skip untranslated entry
+                    # skip if it is not a python format
+                    # because "%s"%var won't be parsed
+                    continue
+                linenum = self._get_po_line_number(entry)
+                po_fname_linenum = "%s:%d" % (po_file, linenum)
+                try:
+                    self.parse_printf(entry.msgid, entry.msgstr)
+                except misc.StringParseError as str_parse_exc:
+                    self.msg_args.append((
+                        po_fname_linenum, "Translation string couldn't be parsed "
+                        "correctly using string%%variables %s" % str_parse_exc))
+                    continue
+                try:
+                    self.parse_format(entry.msgid, entry.msgstr)
+                except misc.StringParseError as str_parse_exc:
+                    self.msg_args.append((
+                        po_fname_linenum, "Translation string couldn't be parsed "
+                        "correctly using string.format() %s" % str_parse_exc))
+
     def _check_rst_syntax_error(self):
         """Check if rst file there is syntax error
         :return: False if exists errors and
@@ -431,7 +589,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
                     # Skip directive errors
                     continue
                 self.msg_args.append((
-                    "%s:%d" % (rst_file, error.line),
+                    "%s:%d" % (rst_file, error.line or 0),
                     msg.strip('\n').replace('\n', '|')))
         if self.msg_args:
             return False

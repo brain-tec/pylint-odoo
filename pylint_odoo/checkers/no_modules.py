@@ -221,6 +221,11 @@ ODOO_MSGS = {
         'translation-contains-variable',
         settings.DESC_DFLT
     ),
+    'W%d16' % settings.BASE_NOMODULE_ID: (
+        'Print used. Use `logger` instead.',
+        'print-used',
+        settings.DESC_DFLT
+    ),
     'F%d01' % settings.BASE_NOMODULE_ID: (
         'File "%s": "%s" not found.',
         'resource-not-exist',
@@ -407,6 +412,29 @@ class NoModuleChecker(misc.PylintOdooChecker):
         """
         return dict(item.split(":") for item in colon_list)
 
+    def _is_psycopg2_sql(self, node):
+        if isinstance(node, astroid.Name):
+            for assignation_node in self._get_assignation_nodes(node):
+                if self._is_psycopg2_sql(assignation_node):
+                    return True
+        if (not isinstance(node, astroid.Call) or
+                not isinstance(node.func, (astroid.Attribute, astroid.Name))):
+            return False
+        imported_name = node.func.as_string().split('.')[0]
+        imported_node = node.root().locals.get(imported_name)
+        # TODO: Consider "from psycopg2 import *"?
+        if not imported_node:
+            return None
+        imported_node = imported_node[0]
+        if isinstance(imported_node, astroid.ImportFrom):
+            package_names = imported_node.modname.split('.')[:1]
+        elif isinstance(imported_node, astroid.Import):
+            package_names = [name[0].split('.')[0] for name in imported_node.names]
+        else:
+            return False
+        if 'psycopg2' in package_names:
+            return True
+
     def _check_node_for_sqli_risk(self, node):
         is_bin_op = (isinstance(node, astroid.BinOp) and
                      node.op in ('%', '+') and
@@ -416,8 +444,32 @@ class NoModuleChecker(misc.PylintOdooChecker):
 
         is_format = (isinstance(node, astroid.Call) and
                      self.get_func_name(node.func) == 'format')
-
+        if is_format:
+            # exclude sql.SQL or sql.Identifier
+            is_psycopg2 = (
+                list(map(self._is_psycopg2_sql, node.args)) +
+                [self._is_psycopg2_sql(keyword.value)
+                 for keyword in (node.keywords or [])])
+            if is_psycopg2 and all(is_psycopg2):
+                is_format = False
         return is_bin_op or is_format
+
+    def _get_assignation_nodes(self, node):
+        if isinstance(node, (astroid.Name, astroid.Subscript)):
+            # 1) look for parent method / controller
+            current = node
+            while (current and not isinstance(current.parent, astroid.FunctionDef)):
+                current = current.parent
+            parent = current.parent
+
+            # 2) check how was the variable built
+            for assign_node in parent.nodes_of_class(astroid.Assign):
+                if assign_node.targets[0].as_string() == node.as_string():
+                    yield assign_node.value
+
+    @utils.check_messages("print-used")
+    def visit_print(self, node):
+        self.add_message("print-used", node=node)
 
     @utils.check_messages('translation-field', 'invalid-commit',
                           'method-compute', 'method-search', 'method-inverse',
@@ -426,8 +478,12 @@ class NoModuleChecker(misc.PylintOdooChecker):
                           'renamed-field-parameter',
                           'translation-required',
                           'translation-contains-variable',
+                          'print-used',
                           )
     def visit_call(self, node):
+        infer_node = utils.safe_infer(node.func)
+        if utils.is_builtin_object(infer_node) and infer_node.name == 'print':
+            self.add_message('print-used', node=node)
         if ('fields' == self.get_func_lib(node.func) and
                 isinstance(node.parent, astroid.Assign) and
                 isinstance(node.parent.parent, astroid.ClassDef)):
@@ -563,23 +619,11 @@ class NoModuleChecker(misc.PylintOdooChecker):
             first_arg = node.args[0]
 
             risky = self._check_node_for_sqli_risk(first_arg)
-
-            if (not risky and isinstance(first_arg,
-                                         (astroid.Name, astroid.Subscript))):
-
-                # 1) look for parent method / controller
-                current = node
-                while (current and
-                       not isinstance(current.parent, astroid.FunctionDef)):
-                    current = current.parent
-                parent = current.parent
-
-                # 2) check how was the variable built
-                for node in parent.nodes_of_class(astroid.Assign):
-                    if node.targets[0].as_string() == first_arg.as_string():
-                        risky = self._check_node_for_sqli_risk(node.value)
-                        if risky:
-                            break
+            if not risky:
+                for node_assignation in self._get_assignation_nodes(first_arg):
+                    risky = self._check_node_for_sqli_risk(node_assignation)
+                    if risky:
+                        break
 
             if risky:
                 self.add_message('sql-injection', node=node)
