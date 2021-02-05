@@ -5,7 +5,6 @@ import os
 import re
 
 import astroid
-import isort
 import polib
 from collections import defaultdict
 from pylint.checkers import utils
@@ -30,6 +29,11 @@ ODOO_MSGS = {
     'E%d02' % settings.BASE_OMODULE_ID: (
         '%s error: %s',
         'xml-syntax-error',
+        settings.DESC_DFLT
+    ),
+    'E%d03' % settings.BASE_OMODULE_ID: (
+        'Test folder imported in module %s',
+        'test-folder-imported',
         settings.DESC_DFLT
     ),
     'W%d01' % settings.BASE_OMODULE_ID: (
@@ -359,6 +363,18 @@ class ModuleChecker(misc.WrapperModuleChecker):
             self.add_message('odoo-addons-relative-import', node=node,
                              args=(self.odoo_module_name))
 
+    def check_folder_test_imported(self, node):
+        if (hasattr(node.parent, 'file')
+                and os.path.basename(node.parent.file) == '__init__.py'):
+            package_names = []
+            if isinstance(node, astroid.ImportFrom):
+                package_names = node.modname.split('.')[:1]
+            elif isinstance(node, astroid.Import):
+                package_names = [name[0].split('.')[0] for name in node.names]
+            if "tests" in package_names:
+                self.add_message('test-folder-imported', node=node,
+                                 args=(node.parent.name,))
+
     @staticmethod
     def _is_absolute_import(node, name):
         modnode = node.root()
@@ -412,8 +428,8 @@ class ModuleChecker(misc.WrapperModuleChecker):
         if self._is_module_name_in_whitelist(module_name):
             # ignore whitelisted modules
             return
-        isort_obj = isort.SortImports(file_contents='')
-        import_category = isort_obj.place_module(module_name)
+        isort_driver = misc.IsortDriver()
+        import_category = isort_driver.place_module(module_name)
         if import_category not in ('FIRSTPARTY', 'THIRDPARTY'):
             # skip if is not a external library or is a white list library
             return
@@ -440,18 +456,22 @@ class ModuleChecker(misc.WrapperModuleChecker):
 
     @utils.check_messages('odoo-addons-relative-import',
                           'missing-import-error',
-                          'missing-manifest-dependency')
+                          'missing-manifest-dependency',
+                          'test-folder-imported')
     def visit_importfrom(self, node):
         self.check_odoo_relative_import(node)
+        self.check_folder_test_imported(node)
         if isinstance(node.scope(), astroid.Module):
             package = node.modname
             self._check_imported_packages(node, package)
 
     @utils.check_messages('odoo-addons-relative-import',
                           'missing-import-error',
-                          'missing-manifest-dependency')
+                          'missing-manifest-dependency',
+                          'test-folder-imported')
     def visit_import(self, node):
         self.check_odoo_relative_import(node)
+        self.check_folder_test_imported(node)
         for name, _ in node.names:
             if isinstance(node.scope(), astroid.Module):
                 self._check_imported_packages(node, name)
@@ -822,7 +842,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
             return None
         replaces = \
             arch.xpath(".//field[@name='name' and @position='replace'][1]") + \
-            arch.xpath(".//xpath[@position='replace'][1]")
+            arch.xpath(".//*[@position='replace'][1]")
         return bool(replaces)
 
     def _check_dangerous_view_replace_wo_priority(self):
