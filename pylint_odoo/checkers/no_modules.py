@@ -515,10 +515,11 @@ class NoModuleChecker(misc.PylintOdooChecker):
                     isinstance(node.parent.targets[0], astroid.AssignName)):
                 field_name = (node.parent.targets[0].name
                               .replace('_', ' '))
+            is_related = bool([1 for kw in node.keywords or [] if kw.arg == 'related'])
             for argument in args:
                 argument_aux = argument
                 # Check this 'name = fields.Char("name")'
-                if (isinstance(argument, astroid.Const) and
+                if (not is_related and isinstance(argument, astroid.Const) and
                     (index ==
                      FIELDS_METHOD.get(argument.parent.func.attrname, 0)) and
                     (argument.value in
@@ -536,7 +537,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
                                          node=argument_aux)
                     # Check if the param string is equal to the name
                     #   of variable
-                    elif argument.arg == 'string' and \
+                    elif not is_related and argument.arg == 'string' and \
                         (isinstance(argument_aux, astroid.Const) and
                          argument_aux.value in
                          [field_name.capitalize(), field_name.title()]):
@@ -560,7 +561,9 @@ class NoModuleChecker(misc.PylintOdooChecker):
             self.add_message('invalid-commit', node=node)
 
         # Call the message_post()
-        if (isinstance(node, astroid.Call) and
+        base_dirname = os.path.basename(os.path.normpath(
+            os.path.dirname(self.linter.current_file)))
+        if (base_dirname != 'tests' and isinstance(node, astroid.Call) and
                 isinstance(node.func, astroid.Attribute) and
                 node.func.attrname == 'message_post'):
             for arg in itertools.chain(node.args, node.keywords or []):
@@ -840,7 +843,9 @@ class NoModuleChecker(misc.PylintOdooChecker):
     @utils.check_messages('attribute-deprecated')
     def visit_assign(self, node):
         node_left = node.targets[0]
-        if isinstance(node_left, astroid.AssignName):
+        if (isinstance(node.parent, astroid.ClassDef) and
+                isinstance(node_left, astroid.AssignName) and
+                [1 for m in node.parent.basenames if 'Model' in m]):
             if node_left.name in self.config.attribute_deprecated:
                 self.add_message('attribute-deprecated',
                                  node=node_left, args=(node_left.name,))

@@ -7,8 +7,8 @@ import re
 import astroid
 import polib
 from collections import defaultdict
+from lxml import etree
 from pylint.checkers import utils
-from six import string_types
 
 from .. import misc, settings
 
@@ -641,10 +641,12 @@ class ModuleChecker(misc.WrapperModuleChecker):
         """
         self.msg_args = []
         for xml_file in self.filter_files_ext('xml', relpath=True):
-            result = self.parse_xml(os.path.join(self.module_path, xml_file))
-            if isinstance(result, string_types):
+            try:
+                self.parse_xml(os.path.join(self.module_path, xml_file),
+                               raise_if_error=True)
+            except etree.XMLSyntaxError as xmlsyntax_error:
                 self.msg_args.append((
-                    xml_file, result.strip('\n').replace('\n', '|')))
+                    xml_file, str(xmlsyntax_error).strip('\n').replace('\n', '|')))
         if self.msg_args:
             return False
         return True
@@ -740,8 +742,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         for xml_file in self.filter_files_ext('xml'):
             doc = self.parse_xml(os.path.join(self.module_path, xml_file))
             for name, attr in (('link', 'href'), ('script', 'src')):
-                nodes = (doc.xpath('.//%s[@%s]' % (name, attr))
-                         if not isinstance(doc, string_types) else [])
+                nodes = doc.xpath('.//%s[@%s]' % (name, attr))
                 for node in nodes:
                     resource = node.get(attr, '')
                     ext = os.path.splitext(os.path.basename(resource))[1]
@@ -911,8 +912,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         self.msg_args = []
         for xml_file in xml_files:
             doc = self.parse_xml(os.path.join(self.module_path, xml_file))
-            odoo_nodes = doc.xpath("/odoo") \
-                if not isinstance(doc, string_types) else []
+            odoo_nodes = doc.xpath("/odoo")
             children, data_node = ((odoo_nodes[0].getchildren(),
                                     odoo_nodes[0].findall('data'))
                                    if odoo_nodes else ([], []))
@@ -932,8 +932,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         self.msg_args = []
         for xml_file in xml_files:
             doc = self.parse_xml(os.path.join(self.module_path, xml_file))
-            openerp_nodes = doc.xpath("/openerp") \
-                if not isinstance(doc, string_types) else []
+            openerp_nodes = doc.xpath("/openerp")
             if openerp_nodes:
                 lineno = openerp_nodes[0].sourceline
                 self.msg_args.append(("%s:%s" % (xml_file, lineno)))
@@ -988,7 +987,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         referenced_files = {}
         for data_type in DFTL_MANIFEST_DATA_KEYS:
             for fname in self.manifest_dict.get(data_type) or []:
-                referenced_files[fname] = data_type
+                referenced_files[os.path.normpath(fname)] = data_type
         return referenced_files
 
     def _get_xml_referenced_files(self):
@@ -998,7 +997,8 @@ class ModuleChecker(misc.WrapperModuleChecker):
                 if not fname.endswith('.xml'):
                     continue
                 referenced_files.update(
-                    self._get_xml_referenced_files_report(fname, data_type)
+                    self._get_xml_referenced_files_report(
+                        os.path.normpath(fname), data_type)
                 )
         return referenced_files
 
@@ -1006,7 +1006,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         return {
             # those files are relative to the addon path
             os.path.join(
-                *record.attrib[attribute].split(os.sep)[1:]
+                *os.path.normpath(record.attrib[attribute]).split(os.sep)[1:]
             ): data_type
             for attribute in ['xml', 'xsl']
             for record in self.parse_xml(
@@ -1122,8 +1122,6 @@ class ModuleChecker(misc.WrapperModuleChecker):
         self.msg_args = []
         for xml_file in self.filter_files_ext('xml', relpath=False):
             doc = self.parse_xml(xml_file)
-            if isinstance(doc, string_types):
-                continue
             for node in doc.xpath(xpath):
                 # Find which directive was used exactly.
                 directive = next(
