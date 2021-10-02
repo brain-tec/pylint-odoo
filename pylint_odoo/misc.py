@@ -11,7 +11,23 @@ from lxml import etree
 from pylint.checkers import BaseChecker, BaseTokenChecker
 from pylint.interfaces import UNDEFINED
 from pylint.interfaces import IAstroidChecker, ITokenChecker
-from pylint.utils import _basename_in_blacklist_re
+try:
+    # sha 5805a73 pylint 2.9
+    from pylint.lint.expand_modules import _is_in_ignore_list_re
+except ImportError:
+    try:
+        # sha 63ca0597 pylint 2.8
+        from pylint.lint.expand_modules import (
+            _basename_in_ignore_list_re as _is_in_ignore_list_re)
+    except ImportError:
+        try:
+            # sha d19c77337 pylint 2.7
+            from pylint.utils.utils import (
+                _basename_in_ignore_list_re as _is_in_ignore_list_re)
+        except ImportError:
+            # Compatibility with pylint<=2.6.0
+            from pylint.utils import (
+                _basename_in_blacklist_re as _is_in_ignore_list_re)
 from restructuredtext_lint import lint_file as rst_lint
 from six import string_types
 
@@ -22,9 +38,18 @@ try:
 except ImportError:
     from whichcraft import which
 
+try:
+    import isort.api
+
+    HAS_ISORT_5 = True
+except ImportError:  # isort < 5
+    import isort
+
+    HAS_ISORT_5 = False
+
 DFTL_VALID_ODOO_VERSIONS = [
     '4.2', '5.0', '6.0', '6.1', '7.0', '8.0', '9.0', '10.0', '11.0', '12.0',
-    '13.0',
+    '13.0', '14.0',
 ]
 DFTL_MANIFEST_VERSION_FORMAT = r"({valid_odoo_versions})\.\d+\.\d+\.\d+$"
 
@@ -108,9 +133,10 @@ class PylintOdooChecker(BaseChecker):
             'valid_odoo_versions'].config.valid_odoo_versions
         valid_odoo_versions = '|'.join(
             map(re.escape, valid_odoo_versions))
+        manifest_version_format = self.linter._all_options[
+            'manifest_version_format'].config.manifest_version_format
         self.config.manifest_version_format_parsed = (
-            DFTL_MANIFEST_VERSION_FORMAT.format(
-                valid_odoo_versions=valid_odoo_versions))
+            manifest_version_format.format(valid_odoo_versions=valid_odoo_versions))
         return re.match(self.config.manifest_version_format_parsed, string)
 
     def get_manifest_file(self, node):
@@ -123,6 +149,9 @@ class PylintOdooChecker(BaseChecker):
         # Get 'module' part from node.name 'module.models.file'
         module_path = node.file
         node_name = node.name
+        if "odoo.addons." in node_name:
+            # we are into a namespace package...
+            node_name = node_name.split("odoo.addons.")[1]
         if os.path.basename(node.file) == '__init__.py':
             node_name += '.__init__'
         for _ in range(node_name.count('.')):
@@ -143,8 +172,7 @@ class PylintOdooChecker(BaseChecker):
                 fext = os.path.splitext(filename)[1].lower()
                 fname = os.path.join(root, filename)
                 # If the file is within black_list_re is ignored
-                if _basename_in_blacklist_re(fname,
-                                             self.linter.config.black_list_re):
+                if _is_in_ignore_list_re(fname, self.linter.config.black_list_re):
                     continue
                 # If the file is within ignores is ignored
                 find = False
@@ -186,6 +214,9 @@ class PylintOdooChecker(BaseChecker):
             self.odoo_node = node
             self.odoo_module_name = os.path.basename(
                 os.path.dirname(manifest_file))
+            self.odoo_module_name_with_ns = "odoo.addons.{}".format(
+                self.odoo_module_name
+            )
             with open(self.manifest_file) as f_manifest:
                 self.manifest_dict = ast.literal_eval(f_manifest.read())
         elif self.odoo_node and os.path.commonprefix(
@@ -199,7 +230,10 @@ class PylintOdooChecker(BaseChecker):
             self.manifest_dict = {}
             self.manifest_file = None
         self.is_main_odoo_module = False
-        if self.manifest_file and node.name.count('.') == 0:
+        if self.manifest_file and (
+                node.name.count('.') == 0 or
+                node.name.endswith(self.odoo_module_name_with_ns)
+        ):
             self.is_main_odoo_module = True
         self.node = node
         self.module_path = os.path.dirname(node.file)
@@ -474,7 +508,7 @@ class WrapperModuleChecker(PylintOdooChecker):
                 unique_items.add(item)
         return list(duplicated_items)
 
-    def parse_xml(self, xml_file):
+    def parse_xml(self, xml_file, raise_if_error=False):
         """Get xml parsed.
         :param xml_file: Path of file xml
         :return: Doc parsed (lxml.etree object)
@@ -486,7 +520,9 @@ class WrapperModuleChecker(PylintOdooChecker):
             with open(xml_file, "rb") as f_obj:
                 doc = etree.parse(f_obj)
         except etree.XMLSyntaxError as xmlsyntax_error_exception:
-            return str(xmlsyntax_error_exception)
+            if raise_if_error:
+                raise xmlsyntax_error_exception
+            return etree.Element("__empty__")
         return doc
 
     def get_xml_records(self, xml_file, model=None, more=None):
@@ -512,8 +548,7 @@ class WrapperModuleChecker(PylintOdooChecker):
             more_filter = more
         doc = self.parse_xml(xml_file)
         return doc.xpath("/openerp//record" + model_filter + more_filter) + \
-            doc.xpath("/odoo//record" + model_filter + more_filter) \
-            if not isinstance(doc, string_types) else []
+            doc.xpath("/odoo//record" + model_filter + more_filter)
 
     def get_field_csv(self, csv_file, field='id'):
         """Get xml ids from csv file
@@ -651,3 +686,23 @@ class WrapperModuleChecker(PylintOdooChecker):
             # with the args and kwargs of the original string
             # so it is a real error
             raise StringParseError(repr(exc))
+
+
+class IsortDriver:
+    """
+    A wrapper around isort API that changed between versions 4 and 5.
+    Taken of https://git.io/Jt3dw
+    """
+
+    def __init__(self):
+        if HAS_ISORT_5:
+            self.isort5_config = isort.api.Config()
+        else:
+            self.isort4_obj = isort.SortImports(  # pylint: disable=no-member
+                file_contents=""
+            )
+
+    def place_module(self, package):
+        if HAS_ISORT_5:
+            return isort.api.place_module(package, self.isort5_config)
+        return self.isort4_obj.place_module(package)

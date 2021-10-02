@@ -19,10 +19,12 @@ EXPECTED_ERRORS = {
     'attribute-deprecated': 3,
     'class-camelcase': 1,
     'consider-merging-classes-inherited': 2,
+    'context-overridden': 3,
     'copy-wo-api-one': 2,
     'create-user-wo-reset-password': 1,
     'dangerous-filter-wo-user': 1,
-    'dangerous-view-replace-wo-priority': 5,
+    'dangerous-view-replace-wo-priority': 6,
+    'dangerous-qweb-replace-wo-priority': 2,
     'deprecated-openerp-xml-node': 5,
     'development-status-allowed': 1,
     'duplicate-id-csv': 2,
@@ -56,10 +58,12 @@ EXPECTED_ERRORS = {
     'print-used': 1,
     'redundant-modulename-xml': 1,
     'rst-syntax-error': 2,
-    'sql-injection': 18,
+    'sql-injection': 21,
+    'str-format-used': 3,
     'translation-field': 2,
     'translation-required': 15,
     'translation-contains-variable': 10,
+    'translation-positional-used': 5,
     'use-vim-comment': 1,
     'wrong-tabs-instead-of-spaces': 2,
     'eval-referenced': 5,
@@ -73,12 +77,14 @@ EXPECTED_ERRORS = {
     'resource-not-exist': 3,
     'website-manifest-key-not-valid-uri': 1,
     'character-not-valid-in-resource-link': 2,
+    'manifest-maintainers-list': 1,
+    'test-folder-imported': 2,
 }
 
 if six.PY3:
     EXPECTED_ERRORS['unnecessary-utf8-coding-comment'] = 19
 else:
-    EXPECTED_ERRORS['no-utf8-coding-comment'] = 6
+    EXPECTED_ERRORS['no-utf8-coding-comment'] = 7
 
 
 @contextmanager
@@ -105,6 +111,9 @@ class MainTest(unittest.TestCase):
         root, dirs, _ = six.next(os.walk(path_modules))
         for path in dirs:
             self.paths_modules.append(os.path.join(root, path))
+        self.odoo_namespace_addons_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+            'test_repo_odoo_namespace', 'odoo')
         self.default_extra_params = [
             '--disable=all',
             '--enable=odoolint,pointless-statement,trailing-newlines',
@@ -247,6 +256,31 @@ class MainTest(unittest.TestCase):
         self.expected_errors.pop('javascript-lint')
         self.assertEqual(self.expected_errors, real_errors)
 
+    def test_85_valid_odoo_version_format(self):
+        """Test --manifest_version_format parameter"""
+        # First, run Pylint for version 8.0
+        extra_params = [
+            '--manifest_version_format="8\.0\.\d+\.\d+.\d+$"'
+            '--valid_odoo_versions=""',
+            '--disable=all',
+            '--enable=manifest-version-format',
+        ]
+        pylint_res = self.run_pylint(self.paths_modules, extra_params)
+        real_errors = pylint_res.linter.stats['by_msg']
+        expected_errors = {
+            'manifest-version-format': 6,
+        }
+        self.assertDictEqual(real_errors, expected_errors)
+
+        # Now for version 11.0
+        extra_params[0] = '--manifest_version_format="11\.0\.\d+\.\d+.\d+$"'
+        pylint_res = self.run_pylint(self.paths_modules, extra_params)
+        real_errors = pylint_res.linter.stats['by_msg']
+        expected_errors = {
+            'manifest-version-format': 5,
+        }
+        self.assertDictEqual(real_errors, expected_errors)
+
     def test_90_valid_odoo_versions(self):
         """Test --valid_odoo_versions parameter when it's '8.0' & '11.0'"""
         # First, run Pylint for version 8.0
@@ -337,6 +371,48 @@ class MainTest(unittest.TestCase):
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors_120 = pylint_res.linter.stats['by_msg']
         self.assertFalse(real_errors_120)
+
+    def test_130_odoo_namespace_repo(self):
+        extra_params = [
+            '--valid_odoo_versions=12.0',
+            '--disable=all',
+            '--enable=po-msgstr-variables,missing-readme',
+        ]
+        pylint_res = self.run_pylint([self.odoo_namespace_addons_path], extra_params)
+        real_errors = pylint_res.linter.stats['by_msg']
+        self.assertDictEqual(
+            real_errors,
+            {"po-msgstr-variables": 1, "missing-readme": 1}
+        )
+
+    def test_140_check_suppress_migrations(self):
+        """Test migrations path supress checks"""
+        extra_params = [
+            '--disable=all',
+            '--enable=invalid-name,unused-argument',
+        ]
+        path_modules = [os.path.join(
+            os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+            'test_repo', 'test_module', 'migrations', '10.0.1.0.0', 'pre-migration.py')]
+
+        # Messages suppressed with plugin for migration
+        pylint_res = self.run_pylint(path_modules, extra_params)
+        real_errors = pylint_res.linter.stats['by_msg']
+        expected_errors = {
+            'invalid-name': 1,
+            'unused-argument': 1,
+        }
+        self.assertDictEqual(real_errors, expected_errors)
+
+        # Messages raised without plugin
+        self.default_options.remove('--load-plugins=pylint_odoo')
+        pylint_res = self.run_pylint(path_modules, extra_params)
+        real_errors = pylint_res.linter.stats['by_msg']
+        expected_errors = {
+            'invalid-name': 3,
+            'unused-argument': 2,
+        }
+        self.assertDictEqual(real_errors, expected_errors)
 
 
 if __name__ == '__main__':

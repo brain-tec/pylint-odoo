@@ -5,11 +5,10 @@ import os
 import re
 
 import astroid
-import isort
 import polib
 from collections import defaultdict
+from lxml import etree
 from pylint.checkers import utils
-from six import string_types
 
 from .. import misc, settings
 
@@ -30,6 +29,11 @@ ODOO_MSGS = {
     'E%d02' % settings.BASE_OMODULE_ID: (
         '%s error: %s',
         'xml-syntax-error',
+        settings.DESC_DFLT
+    ),
+    'E%d03' % settings.BASE_OMODULE_ID: (
+        'Test folder imported in module %s',
+        'test-folder-imported',
         settings.DESC_DFLT
     ),
     'W%d01' % settings.BASE_OMODULE_ID: (
@@ -99,6 +103,12 @@ ODOO_MSGS = {
         '%s Dangerous use of "replace" from view '
         'with priority %s < %s',
         'dangerous-view-replace-wo-priority',
+        settings.DESC_DFLT
+    ),
+    'W%d41' % settings.BASE_OMODULE_ID: (
+        '%s Dangerous use of "replace" from view '
+        'with priority %s < %s',
+        'dangerous-qweb-replace-wo-priority',
         settings.DESC_DFLT
     ),
     'W%d30' % settings.BASE_OMODULE_ID: (
@@ -325,6 +335,15 @@ class ModuleChecker(misc.WrapperModuleChecker):
 
     def _get_odoo_module_imported(self, node):
         odoo_module = []
+        if self.manifest_file and hasattr(node.parent, 'file'):
+            relpath = os.path.relpath(
+                node.parent.file, os.path.dirname(self.manifest_file))
+            if os.path.dirname(relpath) == 'tests':
+                # import errors rules don't apply to the test files
+                # since these files are loaded only when running tests
+                # and in such a case your
+                # module and their external dependencies are installed.
+                return odoo_module
         if isinstance(node, astroid.ImportFrom) and \
                 ('openerp.addons' in node.modname or
                  'odoo.addons' in node.modname):
@@ -349,6 +368,18 @@ class ModuleChecker(misc.WrapperModuleChecker):
         if self.odoo_module_name in self._get_odoo_module_imported(node):
             self.add_message('odoo-addons-relative-import', node=node,
                              args=(self.odoo_module_name))
+
+    def check_folder_test_imported(self, node):
+        if (hasattr(node.parent, 'file')
+                and os.path.basename(node.parent.file) == '__init__.py'):
+            package_names = []
+            if isinstance(node, astroid.ImportFrom):
+                package_names = node.modname.split('.')[:1]
+            elif isinstance(node, astroid.Import):
+                package_names = [name[0].split('.')[0] for name in node.names]
+            if "tests" in package_names:
+                self.add_message('test-folder-imported', node=node,
+                                 args=(node.parent.name,))
 
     @staticmethod
     def _is_absolute_import(node, name):
@@ -403,8 +434,8 @@ class ModuleChecker(misc.WrapperModuleChecker):
         if self._is_module_name_in_whitelist(module_name):
             # ignore whitelisted modules
             return
-        isort_obj = isort.SortImports(file_contents='')
-        import_category = isort_obj.place_module(module_name)
+        isort_driver = misc.IsortDriver()
+        import_category = isort_driver.place_module(module_name)
         if import_category not in ('FIRSTPARTY', 'THIRDPARTY'):
             # skip if is not a external library or is a white list library
             return
@@ -431,18 +462,22 @@ class ModuleChecker(misc.WrapperModuleChecker):
 
     @utils.check_messages('odoo-addons-relative-import',
                           'missing-import-error',
-                          'missing-manifest-dependency')
+                          'missing-manifest-dependency',
+                          'test-folder-imported')
     def visit_importfrom(self, node):
         self.check_odoo_relative_import(node)
+        self.check_folder_test_imported(node)
         if isinstance(node.scope(), astroid.Module):
             package = node.modname
             self._check_imported_packages(node, package)
 
     @utils.check_messages('odoo-addons-relative-import',
                           'missing-import-error',
-                          'missing-manifest-dependency')
+                          'missing-manifest-dependency',
+                          'test-folder-imported')
     def visit_import(self, node):
         self.check_odoo_relative_import(node)
+        self.check_folder_test_imported(node)
         for name, _ in node.names:
             if isinstance(node.scope(), astroid.Module):
                 self._check_imported_packages(node, name)
@@ -612,10 +647,12 @@ class ModuleChecker(misc.WrapperModuleChecker):
         """
         self.msg_args = []
         for xml_file in self.filter_files_ext('xml', relpath=True):
-            result = self.parse_xml(os.path.join(self.module_path, xml_file))
-            if isinstance(result, string_types):
+            try:
+                self.parse_xml(os.path.join(self.module_path, xml_file),
+                               raise_if_error=True)
+            except etree.XMLSyntaxError as xmlsyntax_error:
                 self.msg_args.append((
-                    xml_file, result.strip('\n').replace('\n', '|')))
+                    xml_file, str(xmlsyntax_error).strip('\n').replace('\n', '|')))
         if self.msg_args:
             return False
         return True
@@ -711,8 +748,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         for xml_file in self.filter_files_ext('xml'):
             doc = self.parse_xml(os.path.join(self.module_path, xml_file))
             for name, attr in (('link', 'href'), ('script', 'src')):
-                nodes = (doc.xpath('.//%s[@%s]' % (name, attr))
-                         if not isinstance(doc, string_types) else [])
+                nodes = doc.xpath('.//%s[@%s]' % (name, attr))
                 for node in nodes:
                     resource = node.get(attr, '')
                     ext = os.path.splitext(os.path.basename(resource))[1]
@@ -813,7 +849,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
             return None
         replaces = \
             arch.xpath(".//field[@name='name' and @position='replace'][1]") + \
-            arch.xpath(".//xpath[@position='replace'][1]")
+            arch.xpath(".//*[@position='replace'][1]")
         return bool(replaces)
 
     def _check_dangerous_view_replace_wo_priority(self):
@@ -833,6 +869,34 @@ class ModuleChecker(misc.WrapperModuleChecker):
                     self.msg_args.append((
                         "%s:%s" % (xml_file, view.sourceline), priority,
                         self.config.min_priority))
+        if self.msg_args:
+            return False
+        return True
+
+    def _check_dangerous_qweb_replace_wo_priority(self):
+        """Check dangerous qweb view defined with low priority
+        :return: False if exists errors and
+                 add list of errors in self.msg_args
+        """
+        self.msg_args = []
+        xml_files = self.filter_files_ext('xml')
+        for xml_file in self._skip_files_ext('.xml', xml_files):
+            xml_file_path = os.path.join(self.module_path, xml_file)
+
+            # view template
+            xml_doc = self.parse_xml(xml_file_path)
+            for template in xml_doc.xpath("/odoo//template|/openerp//template"):
+                try:
+                    priority = int(template.get('priority'))
+                except (ValueError, TypeError):
+                    priority = 0
+                for child in template.iterchildren():
+                    if (child.get('position') == 'replace' and
+                            priority < self.config.min_priority):
+                        self.msg_args.append((
+                            "%s:%s" % (xml_file, template.sourceline), priority,
+                            self.config.min_priority))
+                        break
         if self.msg_args:
             return False
         return True
@@ -882,8 +946,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         self.msg_args = []
         for xml_file in xml_files:
             doc = self.parse_xml(os.path.join(self.module_path, xml_file))
-            odoo_nodes = doc.xpath("/odoo") \
-                if not isinstance(doc, string_types) else []
+            odoo_nodes = doc.xpath("/odoo")
             children, data_node = ((odoo_nodes[0].getchildren(),
                                     odoo_nodes[0].findall('data'))
                                    if odoo_nodes else ([], []))
@@ -903,8 +966,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         self.msg_args = []
         for xml_file in xml_files:
             doc = self.parse_xml(os.path.join(self.module_path, xml_file))
-            openerp_nodes = doc.xpath("/openerp") \
-                if not isinstance(doc, string_types) else []
+            openerp_nodes = doc.xpath("/openerp")
             if openerp_nodes:
                 lineno = openerp_nodes[0].sourceline
                 self.msg_args.append(("%s:%s" % (xml_file, lineno)))
@@ -959,7 +1021,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         referenced_files = {}
         for data_type in DFTL_MANIFEST_DATA_KEYS:
             for fname in self.manifest_dict.get(data_type) or []:
-                referenced_files[fname] = data_type
+                referenced_files[os.path.normpath(fname)] = data_type
         return referenced_files
 
     def _get_xml_referenced_files(self):
@@ -969,7 +1031,8 @@ class ModuleChecker(misc.WrapperModuleChecker):
                 if not fname.endswith('.xml'):
                     continue
                 referenced_files.update(
-                    self._get_xml_referenced_files_report(fname, data_type)
+                    self._get_xml_referenced_files_report(
+                        os.path.normpath(fname), data_type)
                 )
         return referenced_files
 
@@ -977,7 +1040,7 @@ class ModuleChecker(misc.WrapperModuleChecker):
         return {
             # those files are relative to the addon path
             os.path.join(
-                *record.attrib[attribute].split(os.sep)[1:]
+                *os.path.normpath(record.attrib[attribute]).split(os.sep)[1:]
             ): data_type
             for attribute in ['xml', 'xsl']
             for record in self.parse_xml(
@@ -1093,8 +1156,6 @@ class ModuleChecker(misc.WrapperModuleChecker):
         self.msg_args = []
         for xml_file in self.filter_files_ext('xml', relpath=False):
             doc = self.parse_xml(xml_file)
-            if isinstance(doc, string_types):
-                continue
             for node in doc.xpath(xpath):
                 # Find which directive was used exactly.
                 directive = next(
