@@ -132,6 +132,18 @@ ODOO_MSGS = {
         'sql-injection',
         settings.DESC_DFLT
     ),
+    'E%d04' % settings.BASE_NOMODULE_ID: (
+        'The maintainers key in the manifest file must be a list of strings',
+        'manifest-maintainers-list',
+        settings.DESC_DFLT
+    ),
+    'E%d05' % settings.BASE_NOMODULE_ID: (
+        'Use of `str.format` method in a translated string. '
+        'Use `_("%(varname)s") % {"varname": value}` instead. '
+        'Be careful https://lucumr.pocoo.org/2016/12/29/careful-with-str-format',
+        'str-format-used',
+        settings.DESC_DFLT
+    ),
     'C%d01' % settings.BASE_NOMODULE_ID: (
         'One of the following authors must be present in manifest: %s',
         'manifest-required-author',
@@ -186,7 +198,8 @@ ODOO_MSGS = {
         settings.DESC_DFLT
     ),
     'C%d11' % settings.BASE_NOMODULE_ID: (
-        'Manifest key development_status "%s" not allowed',
+        'Manifest key development_status "%s" not allowed. '
+        'Use one of: %s.',
         'development-status-allowed',
         settings.DESC_DFLT
     ),
@@ -224,6 +237,18 @@ ODOO_MSGS = {
     'W%d16' % settings.BASE_NOMODULE_ID: (
         'Print used. Use `logger` instead.',
         'print-used',
+        settings.DESC_DFLT
+    ),
+    'W%d20' % settings.BASE_NOMODULE_ID: (
+        'Translation method _(%s) is using positional string printf formatting. '
+        'Use named placeholder `_("%%(placeholder)s")` instead.',
+        'translation-positional-used',
+        settings.DESC_DFLT
+    ),
+    'W%d21' % settings.BASE_NOMODULE_ID: (
+        'Context overridden using dict. '
+        'Better using kwargs `with_context(**%s)` or `with_context(key=value)`',
+        'context-overridden',
         settings.DESC_DFLT
     ),
     'F%d01' % settings.BASE_NOMODULE_ID: (
@@ -412,6 +437,18 @@ class NoModuleChecker(misc.PylintOdooChecker):
         """
         return dict(item.split(":") for item in colon_list)
 
+    def _sqli_allowable(self, node):
+        # sql.SQL or sql.Identifier is OK
+        if self._is_psycopg2_sql(node):
+            return True
+        if isinstance(node, astroid.Call):
+            node = node.func
+        # self._thing is OK (mostly self._table), self._thing() also because
+        # it's a common pattern of reports (self._select, self._group_by, ...)
+        return (isinstance(node, astroid.Attribute)
+                and isinstance(node.expr, astroid.Name)
+                and node.attrname.startswith('_'))
+
     def _is_psycopg2_sql(self, node):
         if isinstance(node, astroid.Name):
             for assignation_node in self._get_assignation_nodes(node):
@@ -436,23 +473,63 @@ class NoModuleChecker(misc.PylintOdooChecker):
             return True
 
     def _check_node_for_sqli_risk(self, node):
-        is_bin_op = (isinstance(node, astroid.BinOp) and
-                     node.op in ('%', '+') and
-                     # ignore self._table / model._table / self._uid...
-                     not (isinstance(node.right, astroid.Attribute) and
-                          node.right.attrname.startswith('_')))
+        if isinstance(node, astroid.BinOp) and node.op in ('%', '+'):
+            if isinstance(node.right, astroid.Tuple):
+                # execute("..." % (self._table, thing))
+                if not all(map(self._sqli_allowable, node.right.elts)):
+                    return True
+            elif isinstance(node.right, astroid.Dict):
+                # execute("..." % {'table': self._table}
+                if not all(self._sqli_allowable(v) for _, v in node.right.items):
+                    return True
+            elif not self._sqli_allowable(node.right):
+                # execute("..." % self._table)
+                return True
 
-        is_format = (isinstance(node, astroid.Call) and
-                     self.get_func_name(node.func) == 'format')
-        if is_format:
-            # exclude sql.SQL or sql.Identifier
-            is_psycopg2 = (
-                list(map(self._is_psycopg2_sql, node.args)) +
-                [self._is_psycopg2_sql(keyword.value)
-                 for keyword in (node.keywords or [])])
-            if is_psycopg2 and all(is_psycopg2):
-                is_format = False
-        return is_bin_op or is_format
+        # check execute("...".format(self._table, table=self._table))
+        # ignore sql.SQL().format
+        if isinstance(node, astroid.Call) \
+                and isinstance(node.func, astroid.Attribute) \
+                and node.func.attrname == 'format':
+
+            if not all(map(self._sqli_allowable, node.args or [])):
+                return True
+
+            if not all(
+                self._sqli_allowable(keyword.value)
+                for keyword in (node.keywords or [])
+            ):
+                return True
+
+        return False
+
+    def _check_sql_injection_risky(self, node):
+        # Inspired from OCA/pylint-odoo project
+        # Thanks @moylop260 (Moises Lopez) & @nilshamerlinck (Nils Hamerlinck)
+        current_file_bname = os.path.basename(self.linter.current_file)
+        if not (
+            # .execute() or .executemany()
+            isinstance(node, astroid.Call) and node.args and
+            isinstance(node.func, astroid.Attribute) and
+            node.func.attrname in ('execute', 'executemany') and
+            # cursor expr (see above)
+            self.get_cursor_name(node.func) in DFTL_CURSOR_EXPR and
+            # cr.execute("select * from %s" % foo, [bar]) -> probably a good reason
+            # for string formatting
+            len(node.args) <= 1 and
+            # ignore in test files, probably not accessible
+            not current_file_bname.startswith('test_')
+        ):
+            return False
+        first_arg = node.args[0]
+        is_concatenation = self._check_node_for_sqli_risk(first_arg)
+        # if first parameter is a variable, check how it was built instead
+        if not is_concatenation:
+            for node_assignation in self._get_assignation_nodes(first_arg):
+                is_concatenation = self._check_node_for_sqli_risk(node_assignation)
+                if is_concatenation:
+                    break
+        return is_concatenation
 
     def _get_assignation_nodes(self, node):
         if isinstance(node, (astroid.Name, astroid.Subscript)):
@@ -460,12 +537,12 @@ class NoModuleChecker(misc.PylintOdooChecker):
             current = node
             while (current and not isinstance(current.parent, astroid.FunctionDef)):
                 current = current.parent
-            parent = current.parent
-
-            # 2) check how was the variable built
-            for assign_node in parent.nodes_of_class(astroid.Assign):
-                if assign_node.targets[0].as_string() == node.as_string():
-                    yield assign_node.value
+            if current:
+                parent = current.parent
+                # 2) check how was the variable built
+                for assign_node in parent.nodes_of_class(astroid.Assign):
+                    if assign_node.targets[0].as_string() == node.as_string():
+                        yield assign_node.value
 
     @utils.check_messages("print-used")
     def visit_print(self, node):
@@ -478,7 +555,8 @@ class NoModuleChecker(misc.PylintOdooChecker):
                           'renamed-field-parameter',
                           'translation-required',
                           'translation-contains-variable',
-                          'print-used',
+                          'print-used', 'translation-positional-used',
+                          'str-format-used', 'context-overridden',
                           )
     def visit_call(self, node):
         infer_node = utils.safe_infer(node.func)
@@ -495,10 +573,11 @@ class NoModuleChecker(misc.PylintOdooChecker):
                     isinstance(node.parent.targets[0], astroid.AssignName)):
                 field_name = (node.parent.targets[0].name
                               .replace('_', ' '))
+            is_related = bool([1 for kw in node.keywords or [] if kw.arg == 'related'])
             for argument in args:
                 argument_aux = argument
                 # Check this 'name = fields.Char("name")'
-                if (isinstance(argument, astroid.Const) and
+                if (not is_related and isinstance(argument, astroid.Const) and
                     (index ==
                      FIELDS_METHOD.get(argument.parent.func.attrname, 0)) and
                     (argument.value in
@@ -516,7 +595,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
                                          node=argument_aux)
                     # Check if the param string is equal to the name
                     #   of variable
-                    elif argument.arg == 'string' and \
+                    elif not is_related and argument.arg == 'string' and \
                         (isinstance(argument_aux, astroid.Const) and
                          argument_aux.value in
                          [field_name.capitalize(), field_name.title()]):
@@ -539,8 +618,19 @@ class NoModuleChecker(misc.PylintOdooChecker):
                 self.get_cursor_name(node.func) in self.config.cursor_expr:
             self.add_message('invalid-commit', node=node)
 
-        # Call the message_post()
         if (isinstance(node, astroid.Call) and
+                isinstance(node.func, astroid.Attribute) and
+                node.func.attrname == 'with_context' and
+                not node.keywords and node.args):
+            # with_context(**ctx) is considered a keywords
+            # So, if only one args is received it is overridden
+            self.add_message('context-overridden', node=node,
+                             args=(node.args[0].as_string(),))
+
+        # Call the message_post()
+        base_dirname = os.path.basename(os.path.normpath(
+            os.path.dirname(self.linter.current_file)))
+        if (base_dirname != 'tests' and isinstance(node, astroid.Call) and
                 isinstance(node.func, astroid.Attribute) and
                 node.func.attrname == 'message_post'):
             for arg in itertools.chain(node.args, node.keywords or []):
@@ -587,6 +677,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
                 and node.func.name == '_'
                 and node.args):
             wrong = ''
+            right = ''
             arg = node.args[0]
             # case: _('...' % (variables))
             if isinstance(arg, astroid.BinOp) and arg.op == '%':
@@ -599,40 +690,40 @@ class NoModuleChecker(misc.PylintOdooChecker):
                     and isinstance(arg.func, astroid.Attribute)
                     and isinstance(arg.func.expr, astroid.Const)
                     and arg.func.attrname == 'format'):
+                self.add_message('str-format-used', node=node)
                 wrong = arg.as_string()
                 params_as_string = ', '.join([
                     x.as_string()
                     for x in itertools.chain(arg.args, arg.keywords or [])])
                 right = '_(%s).format(%s)' % (
                     arg.func.expr.as_string(), params_as_string)
-            if wrong:
+            if wrong and right:
                 self.add_message(
                     'translation-contains-variable', node=node,
                     args=(wrong, right))
 
+            # translation-positional-used: Check "string to translate"
+            # to check "%s %s..." used where the position can't be changed
+            str2translate = arg.as_string()
+            printf_args = (
+                misc.WrapperModuleChecker.
+                _get_printf_str_args_kwargs(str2translate))
+            if isinstance(printf_args, tuple) and len(printf_args) >= 2:
+                # Return tuple for %s and dict for %(varname)s
+                # Check just the following cases "%s %s..."
+                self.add_message('translation-positional-used',
+                                 node=node, args=(str2translate,))
+
         # SQL Injection
-        if isinstance(node, astroid.Call) and node.args and \
-                isinstance(node.func, astroid.Attribute) and \
-                node.func.attrname in ('execute', 'executemany') and \
-                self.get_cursor_name(node.func) in self.config.cursor_expr:
-
-            first_arg = node.args[0]
-
-            risky = self._check_node_for_sqli_risk(first_arg)
-            if not risky:
-                for node_assignation in self._get_assignation_nodes(first_arg):
-                    risky = self._check_node_for_sqli_risk(node_assignation)
-                    if risky:
-                        break
-
-            if risky:
-                self.add_message('sql-injection', node=node)
+        if self._check_sql_injection_risky(node):
+            self.add_message('sql-injection', node=node)
 
     @utils.check_messages(
         'license-allowed', 'manifest-author-string', 'manifest-deprecated-key',
         'manifest-required-author', 'manifest-required-key',
         'manifest-version-format', 'resource-not-exist',
-        'website-manifest-key-not-valid-uri', 'development-status-allowed')
+        'website-manifest-key-not-valid-uri', 'development-status-allowed',
+        'manifest-maintainers-list')
     def visit_dict(self, node):
         if not os.path.basename(self.linter.current_file) in \
                 settings.MANIFEST_FILES \
@@ -713,8 +804,16 @@ class NoModuleChecker(misc.PylintOdooChecker):
         dev_status = manifest_dict.get('development_status')
         if (dev_status and
                 dev_status not in self.config.development_status_allowed):
+            valid_status = ", ".join(self.config.development_status_allowed)
             self.add_message('development-status-allowed',
-                             node=node, args=(dev_status,))
+                             node=node, args=(dev_status, valid_status))
+
+        # Check maintainers key is a list of strings
+        maintainers = manifest_dict.get('maintainers')
+        if(maintainers and (not isinstance(maintainers, list)
+                            or any(not isinstance(item, str) for item in maintainers))):
+            self.add_message('manifest-maintainers-list',
+                             node=node)
 
     @utils.check_messages('api-one-multi-together',
                           'copy-wo-api-one', 'api-one-deprecated',
@@ -797,7 +896,9 @@ class NoModuleChecker(misc.PylintOdooChecker):
     @utils.check_messages('attribute-deprecated')
     def visit_assign(self, node):
         node_left = node.targets[0]
-        if isinstance(node_left, astroid.AssignName):
+        if (isinstance(node.parent, astroid.ClassDef) and
+                isinstance(node_left, astroid.AssignName) and
+                [1 for m in node.parent.basenames if 'Model' in m]):
             if node_left.name in self.config.attribute_deprecated:
                 self.add_message('attribute-deprecated',
                                  node=node_left, args=(node_left.name,))

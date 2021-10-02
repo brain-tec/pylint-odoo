@@ -54,6 +54,9 @@ class TestModel(models.Model):
         'Other Field2',
         copy=True,
     )
+    field_related = fields.Char('Field Related', related='model_id.related_field')
+    other_field_related = fields.Char(
+        related='model_id.related_field', string='Other Field Related')
 
     # This is a inherit overwrite field then don't should show errors related
     # with creation of fields.
@@ -62,6 +65,14 @@ class TestModel(models.Model):
             fields.Datetime.context_timestamp(self,
                                               timestamp=fields.Datetime.now())
         )
+        self.with_context({'overwrite_context': True}).write({})
+        ctx = {'overwrite_context': True}
+        self.with_context(ctx).write({})
+        ctx2 = ctx
+        self.with_context(ctx2).write({})
+
+        self.with_context(**ctx).write({})
+        self.with_context(overwrite_context=False).write({})
         return date
 
     my_ok_field = fields.Float(
@@ -245,6 +256,17 @@ class TestModel(models.Model):
         error_msg = _('Variable not translatable: {}'.format(variable1))
         error_msg = _('Variables not translatable: {}, {variable2}'.format(
             variable1, variable2=variable2))
+
+        # string with parameters without name
+        # so you can't change the order in the translation
+        _('%s %d') % ('hello', 3)
+        _('%s %s') % ('hello', 'world')
+
+        # Valid cases
+        _('%(strname)s') % {'strname': 'hello'}
+        _('%(strname)s %(intname)d') % {'strname': 'hello', 'intname': 3}
+        _('%s') % 'hello'
+        _('%d') % 3
         return error_msg
 
     def my_method2(self, variable2):
@@ -397,6 +419,9 @@ class TestModel(models.Model):
                 query=sql_query,
             ))
 
+        self._cr.execute(
+            'SELECT name FROM %(table)s' % {'table': self._table})
+
     # old api
     def sql_injection_modulo_operator(self, cr, uid, ids, context=None):
         # Use of % operator: risky
@@ -410,12 +435,16 @@ class TestModel(models.Model):
             'SELECT name FROM account WHERE id IN %s' % (tuple(ids),))
 
         operator = 'WHERE'
+        # Ignore sql-injection because of there is a parameter e.g. "ids"
         self._cr.execute(
             'SELECT name FROM account %s id IN %%s' % operator, ids)
 
         var = 'SELECT name FROM account WHERE id IN %s'
         values = ([1, 2, 3, ], )
         self._cr.execute(var % values)
+
+        self._cr.execute(
+            'SELECT name FROM account WHERE id IN %(ids)s' % {'ids': ids})
 
     def sql_injection_executemany(self, ids, cr, v1, v2):
         # Check executemany() as well
@@ -427,12 +456,20 @@ class TestModel(models.Model):
         self.cr.execute(
             'SELECT name FROM account WHERE id IN {}'.format(ids))
 
+        var = 'SELECT name FROM account WHERE id IN {}'
+        values = (1, 2, 3)
+        self._cr.execute(var.format(values))
+
+        self.cr.execute(
+            'SELECT name FROM account WHERE id IN {ids}'.format(ids=ids))
+
     def sql_injection_plus_operator(self, ids, cr):
         # Use of +: risky
         self.cr.execute(
             'SELECT name FROM account WHERE id IN ' + str(tuple(ids)))
 
         operator = 'WHERE'
+        # Ignore sql-injection because of there is a parameter e.g. "ids"
         self._cr.execute(
             'SELECT name FROM account ' + operator + ' id IN %s', ids)
         self.cr.execute(
@@ -455,6 +492,12 @@ class TestModel(models.Model):
         var[1] = 'SELECT name FROM account WHERE id IN %s' % tuple(ids)
         self._cr.execute(var[1])
 
+        var = 'SELECT name FROM account WHERE id IN %(ids)s' % {'ids': tuple(ids)}
+        self._cr.execute(var)
+
+        var[1] = 'SELECT name FROM account WHERE id IN %(ids)s' % {'ids': tuple(ids)}
+        self._cr.execute(var[1])
+
     def sql_no_injection_private_attributes(self, _variable, variable):
         # Skip sql-injection using private attributes
         self._cr.execute(
@@ -466,3 +509,38 @@ class TestModel(models.Model):
             "CREATE VIEW %s AS (SELECT * FROM res_partner)" % _variable)
         self._cr.execute(
             "CREATE VIEW %s AS (SELECT * FROM res_partner)" % variable)
+
+    def sql_no_injection_private_methods(self):
+        # Skip sql-injection using private methods
+        self.env.cr.execute(
+            """
+            CREATE OR REPLACE VIEW %s AS (
+                %s %s %s %s
+            )
+        """
+            % (
+                self._table,
+                self._select(),
+                self._from(),
+                self._where(),
+                self._group_by(),
+            )
+        )
+
+    def func(self, a):
+        length = len(a)
+        return length
+
+
+class NoOdoo(object):
+    length = 0
+
+
+if __name__ == '__main__':
+    self = None
+    queries = [
+        "SELECT id FROM res_partner",
+        "SELECT id FROM res_users",
+    ]
+    for query in queries:
+        self.env.cr.execute(query)
