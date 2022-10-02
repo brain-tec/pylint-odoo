@@ -55,6 +55,8 @@ Enable custom checks for Odoo modules.
 +-------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------+
 | E8105 | Use of ``str.format`` method in a translated string. Use ``_("%(varname)s") % {"varname": value}`` instead. Be careful https://lucumr.pocoo.org/2016/12/29/careful-with-str-format                                                                                                                                                                  | str-format-used                      |
 +-------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------+
+| E8106 | Use of external request method ``%s`` without timeout. It could wait for a long time                                                                                                                                                                                                                                                                | external-request-timeout             |
++-------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------+
 | F8101 | File "%s": "%s" not found.                                                                                                                                                                                                                                                                                                                          | resource-not-exist                   |
 +-------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------+
 | R7980 | Consider merging classes inherited to "%s" from %s.                                                                                                                                                                                                                                                                                                 | consider-merging-classes-inherited   |
@@ -222,8 +224,8 @@ This skip only work with the name of the check, not work with the name of check
 The position of the comment it is not relative to the line that throw the check
 
 
-.. |Build Status| image:: https://travis-ci.org/OCA/pylint-odoo.svg?branch=master
-   :target: https://travis-ci.org/OCA/pylint-odoo
+.. |Build Status| image:: https://app.travis-ci.com/OCA/pylint-odoo.svg?branch=master
+   :target: https://app.travis-ci.com/OCA/pylint-odoo
 .. |Coverage Status| image:: https://coveralls.io/repos/OCA/pylint-odoo/badge.svg?branch=master&service=github
    :target: https://coveralls.io/github/OCA/pylint-odoo?branch=master
 .. |Pypi Package| image:: https://img.shields.io/pypi/v/pylint-odoo.svg

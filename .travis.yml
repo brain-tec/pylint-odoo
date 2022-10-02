@@ -6,25 +6,39 @@ cache:
   directories:
     - $HOME/.cache/pip
 
+# node 18 is not compatible with current ubuntu version used in travis
+# More info about:
+#   - https://travis-ci.community/t/the-command-npm-config-set-spin-false-failed-and-exited-with-1-during/12909/4
+node_js:
+  - 17
+
 matrix:
   include:
-    - python: 2.7
+    - python: "2.7"
       env:
         TOXENV=pylint
-    - python: 3.5
+    - python: "3.5"
       env:
         TOXENV=pylint
-    - python: 3.7
+    - python: "3.7"
       env:
         TOXENV=pylint
+    - python: "3.8"
+      env:
+        TOXENV=pylint
+        LINT="1"
         DEPLOY="1"
-    - python: 3.8
+    - python: "3.9-dev"
       env:
         TOXENV=pylint
-    - python: 3.9-dev
+    - python: "3.10-dev"
+      dist: jammy
       env:
         TOXENV=pylint
-
+    - python: "3.11-dev"
+      dist: jammy
+      env:
+        TOXENV=pylint
 
 install:
     # Remove packages installed from addons-apt-packages of travis file
@@ -36,11 +50,13 @@ install:
     - ${TRAVIS_BUILD_DIR}/install.sh
 
     # Install testing dependencies
-    - pip install coveralls flake8==3.8.3 tox restructuredtext_lint pygments
+    - pip install -U --force-reinstall pluggy
+    - pip freeze
+    - pip install coveralls tox
+    - if [[ "${LINT}" == "1" ]]; then pip install flake8==3.8.3 restructuredtext_lint==1.2.0 pygments; fi
 
 script:
-    - flake8 --ignore=E722,F601,F841,W503,W504,W605 --max-line-length=88 --exclude=__init__.py .
-    - restructuredtext-lint ${TRAVIS_BUILD_DIR}/README.rst
+    - if [[ "${LINT}" == "1" ]]; then flake8 --ignore=E722,F601,F841,W503,W504,W605 --max-line-length=88 --exclude=__init__.py . && restructuredtext-lint ${TRAVIS_BUILD_DIR}/README.rst; fi
     - tox -e $TOXENV,profile-stats
 
 after_success:

@@ -49,7 +49,7 @@ except ImportError:  # isort < 5
 
 DFTL_VALID_ODOO_VERSIONS = [
     '4.2', '5.0', '6.0', '6.1', '7.0', '8.0', '9.0', '10.0', '11.0', '12.0',
-    '13.0', '14.0',
+    '13.0', '14.0', '15.0', '16.0',
 ]
 DFTL_MANIFEST_VERSION_FORMAT = r"({valid_odoo_versions})\.\d+\.\d+\.\d+$"
 
@@ -230,7 +230,7 @@ class PylintOdooChecker(BaseChecker):
             self.manifest_dict = {}
             self.manifest_file = None
         self.is_main_odoo_module = False
-        if self.manifest_file and (
+        if self.manifest_file and os.path.basename(node.file) == '__init__.py' and (
                 node.name.count('.') == 0 or
                 node.name.endswith(self.odoo_module_name_with_ns)
         ):
