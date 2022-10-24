@@ -5,14 +5,14 @@ from pylint.checkers.base import BasicChecker, NameChecker
 from pylint.checkers.variables import VariablesChecker
 from pylint_plugin_utils import suppress_message
 
-from .. import settings
+from .. import misc
 
 
 def is_manifest_file(node):
     """Verify if the node file is a manifest file
     :return: Boolean `True` if is manifest file else `False`"""
     filename = os.path.basename(node.root().file)
-    is_manifest = filename in settings.MANIFEST_FILES
+    is_manifest = filename in misc.MANIFEST_FILES
     return is_manifest
 
 
@@ -48,10 +48,9 @@ def apply_augmentations(linter):
 
     # W0104 - pointless-statement
     # manifest file have a valid pointless-statement dict
-    discard = BasicChecker.visit_discard if hasattr(BasicChecker, "visit_discard") else BasicChecker.visit_expr
-    suppress_message(linter, discard, "W0104", is_manifest_file)
+    suppress_message(linter, BasicChecker.visit_expr, "pointless-statement", is_manifest_file)
 
     # C0103 - invalid-name and W0613 - unused-argument for migrations/
-    suppress_message(linter, NameChecker.visit_module, "C0103", is_migration_path)
-    suppress_message(linter, NameChecker.visit_functiondef, "C0103", is_migration_path)
-    suppress_message(linter, VariablesChecker.leave_functiondef, "W0613", is_migration_path)
+    suppress_message(linter, NameChecker.visit_module, "invalid-name", is_migration_path)
+    suppress_message(linter, NameChecker.visit_functiondef, "invalid-name", is_migration_path)
+    suppress_message(linter, VariablesChecker.leave_functiondef, "unused-argument", is_migration_path)

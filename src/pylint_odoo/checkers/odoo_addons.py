@@ -1,53 +1,99 @@
 """Enable checkers to visit all nodes different to modules.
 You can use:
+    visit_annassign
+    visit_arg
     visit_arguments
-    visit_assattr
     visit_assert
     visit_assign
-    visit_assname
-    visit_backquote
+    visit_assignattr
+    visit_assignname
+    visit_asyncfor
+    visit_asyncfunctiondef
+    visit_asyncwith
+    visit_attribute
+    visit_augassign
+    visit_await
     visit_binop
     visit_boolop
     visit_break
     visit_call
+    visit_child
     visit_classdef
     visit_compare
+    visit_comprehension
+    visit_const
+    visit_constant
     visit_continue
-    visit_default
+    visit_decorators
     visit_delattr
+    visit_delete
     visit_delname
     visit_dict
     visit_dictcomp
+    visit_dictunpack
+    visit_ellipsis
+    visit_empty
+    visit_emptynode
+    visit_evaluatedobject
     visit_excepthandler
-    visit_exec
     visit_expr
     visit_extslice
     visit_for
-    visit_import
-    visit_importfrom
+    visit_formattedvalue
+    visit_frozenset
     visit_functiondef
-    visit_genexpr
-    visit_getattr
+    visit_generatorexp
     visit_global
     visit_if
     visit_ifexp
+    visit_import
+    visit_importfrom
     visit_index
+    visit_joinedstr
+    visit_keyword
     visit_lambda
+    visit_list
     visit_listcomp
+    visit_match
+    visit_matchas
+    visit_matchcase
+    visit_matchclass
+    visit_matchmapping
+    visit_matchor
+    visit_matchsequence
+    visit_matchsingleton
+    visit_matchstar
+    visit_matchvalue
+    visit_module
     visit_name
+    visit_nameconstant
+    visit_namedexpr
+    visit_nonlocal
+    visit_num
     visit_pass
-    visit_print
-    visit_project
+    visit_property
     visit_raise
+    visit_response
     visit_return
+    visit_set
     visit_setcomp
     visit_slice
+    visit_starred
+    visit_str
     visit_subscript
+    visit_super
+    visit_transforms
+    visit_try
     visit_tryexcept
     visit_tryfinally
+    visit_tuple
     visit_unaryop
+    visit_uninferable
+    visit_unknown
     visit_while
+    visit_with
     visit_yield
+    visit_yieldfrom
 for more info visit pylint doc
 """
 
@@ -55,185 +101,137 @@ import ast
 import itertools
 import os
 import re
-from collections import Counter
+import string
+from collections import Counter, defaultdict
 
 import astroid
 import validators
-from pylint.checkers import utils
+from pylint.checkers import BaseChecker, utils
 
-from .. import misc, settings
-from .modules_odoo import DFTL_MANIFEST_DATA_KEYS
+from .. import misc
+
+CHECK_DESCRIPTION = (
+    "You can review guidelines here: "
+    "https://github.com/OCA/odoo-community.org/blob/master/website/"
+    "Contribution/CONTRIBUTING.rst"
+)
 
 ODOO_MSGS = {
     # C->convention R->refactor W->warning E->error F->fatal
-    "R%d01"
-    % settings.BASE_NOMODULE_ID: (
-        "Import `Warning` should be renamed as UserError " "`from openerp.exceptions import Warning as UserError`",
-        "openerp-exception-warning",
-        settings.DESC_DFLT,
-    ),
-    "W%d03"
-    % settings.BASE_NOMODULE_ID: (
-        'Translation method _("string") in fields is not necessary.',
-        "translation-field",
-        settings.DESC_DFLT,
-    ),
-    "W%d05" % settings.BASE_NOMODULE_ID: ('attribute "%s" deprecated', "attribute-deprecated", settings.DESC_DFLT),
-    "W%d06"
-    % settings.BASE_NOMODULE_ID: ('Missing `super` call in "%s" method.', "method-required-super", settings.DESC_DFLT),
-    "W%d10"
-    % settings.BASE_NOMODULE_ID: (
-        "Missing `return` (`super` is used) in method %s.",
-        "missing-return",
-        settings.DESC_DFLT,
-    ),
-    "E%d01"
-    % settings.BASE_NOMODULE_ID: (
-        "The author key in the manifest file must be a string " "(with comma separated values)",
-        "manifest-author-string",
-        settings.DESC_DFLT,
-    ),
-    "E%d02"
-    % settings.BASE_NOMODULE_ID: (
-        "Use of cr.commit() directly - More info "
-        "https://github.com/OCA/odoo-community.org/blob/master/website/"
-        "Contribution/CONTRIBUTING.rst"
-        "#never-commit-the-transaction",
-        "invalid-commit",
-        settings.DESC_DFLT,
-    ),
-    "E%d03"
-    % settings.BASE_NOMODULE_ID: (
-        "SQL injection risk. "
-        "Use parameters if you can. - More info "
-        "https://github.com/OCA/odoo-community.org/blob/master/website/"
-        "Contribution/CONTRIBUTING.rst"
-        "#no-sql-injection",
-        "sql-injection",
-        settings.DESC_DFLT,
-    ),
-    "E%d04"
-    % settings.BASE_NOMODULE_ID: (
-        "The maintainers key in the manifest file must be a list of strings",
-        "manifest-maintainers-list",
-        settings.DESC_DFLT,
-    ),
-    "E%d06"
-    % settings.BASE_NOMODULE_ID: (
-        "Use of external request method `%s` without timeout. " "It could wait for a long time",
-        "external-request-timeout",
-        settings.DESC_DFLT,
-    ),
-    "C%d01"
-    % settings.BASE_NOMODULE_ID: (
+    "C8101": (
         "One of the following authors must be present in manifest: %s",
         "manifest-required-author",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "C%d02"
-    % settings.BASE_NOMODULE_ID: (
-        'Missing required key "%s" in manifest file',
-        "manifest-required-key",
-        settings.DESC_DFLT,
-    ),
-    "C%d03"
-    % settings.BASE_NOMODULE_ID: (
-        'Deprecated key "%s" in manifest file',
-        "manifest-deprecated-key",
-        settings.DESC_DFLT,
-    ),
-    "C%d04"
-    % settings.BASE_NOMODULE_ID: (
-        'Use `CamelCase` "%s" in class name "%s". '
-        "You can use oca-autopep8 of https://github.com/OCA/maintainer-tools"
-        " to auto fix it.",
-        "class-camelcase",
-        settings.DESC_DFLT,
-    ),
-    "C%d05"
-    % settings.BASE_NOMODULE_ID: ('License "%s" not allowed in manifest file.', "license-allowed", settings.DESC_DFLT),
-    "C%d06"
-    % settings.BASE_NOMODULE_ID: (
-        'Wrong Version Format "%s" in manifest file. ' 'Regex to match: "%s"',
+    "C8102": ('Missing required key "%s" in manifest file', "manifest-required-key", CHECK_DESCRIPTION),
+    "C8103": ('Deprecated key "%s" in manifest file', "manifest-deprecated-key", CHECK_DESCRIPTION),
+    "C8105": ('License "%s" not allowed in manifest file.', "license-allowed", CHECK_DESCRIPTION),
+    "C8106": (
+        'Wrong Version Format "%s" in manifest file. Regex to match: "%s"',
         "manifest-version-format",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "C%d07"
-    % settings.BASE_NOMODULE_ID: (
-        'String parameter on "%s" requires translation. Use %s_(%s)',
-        "translation-required",
-        settings.DESC_DFLT,
-    ),
-    "C%d08"
-    % settings.BASE_NOMODULE_ID: (
-        'Name of compute method should start with "_compute_"',
-        "method-compute",
-        settings.DESC_DFLT,
-    ),
-    "C%d09"
-    % settings.BASE_NOMODULE_ID: (
-        'Name of search method should start with "_search_"',
-        "method-search",
-        settings.DESC_DFLT,
-    ),
-    "C%d10"
-    % settings.BASE_NOMODULE_ID: (
-        'Name of inverse method should start with "_inverse_"',
-        "method-inverse",
-        settings.DESC_DFLT,
-    ),
-    "C%d11"
-    % settings.BASE_NOMODULE_ID: (
-        'Manifest key development_status "%s" not allowed. ' "Use one of: %s.",
+    "C8107": ('String parameter on "%s" requires translation. Use %s_(%s)', "translation-required", CHECK_DESCRIPTION),
+    "C8108": ('Name of compute method should start with "_compute_"', "method-compute", CHECK_DESCRIPTION),
+    "C8109": ('Name of search method should start with "_search_"', "method-search", CHECK_DESCRIPTION),
+    "C8110": ('Name of inverse method should start with "_inverse_"', "method-inverse", CHECK_DESCRIPTION),
+    "C8111": (
+        'Manifest key development_status "%s" not allowed. Use one of: %s.',
         "development-status-allowed",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "W%d11"
-    % settings.BASE_NOMODULE_ID: (
+    "C8112": ("Missing ./README.rst file. Template here: %s", "missing-readme", CHECK_DESCRIPTION),
+    "E8101": (
+        "The author key in the manifest file must be a string (with comma separated values)",
+        "manifest-author-string",
+        CHECK_DESCRIPTION,
+    ),
+    "E8102": (
+        "Use of cr.commit() directly - More info "
+        "https://github.com/OCA/odoo-community.org/blob/master/website/Contribution/CONTRIBUTING.rst#never-commit-the-transaction",  # noqa: B950
+        "invalid-commit",
+        CHECK_DESCRIPTION,
+    ),
+    "E8103": (
+        "SQL injection risk. Use parameters if you can. - More info "
+        "https://github.com/OCA/odoo-community.org/blob/master/website/Contribution/CONTRIBUTING.rst#no-sql-injection",
+        "sql-injection",
+        CHECK_DESCRIPTION,
+    ),
+    "E8104": (
+        "The maintainers key in the manifest file must be a list of strings",
+        "manifest-maintainers-list",
+        CHECK_DESCRIPTION,
+    ),
+    "E8106": (
+        "Use of external request method `%s` without timeout. It could wait for a long time",
+        "external-request-timeout",
+        CHECK_DESCRIPTION,
+    ),
+    "E8130": ("Test folder imported in module %s", "test-folder-imported", CHECK_DESCRIPTION),
+    "F8101": ('File "%s": "%s" not found.', "resource-not-exist", CHECK_DESCRIPTION),
+    "R8101": (
+        "`odoo.exceptions.Warning` is a deprecated alias to `odoo.exceptions.UserError` "
+        "use `from odoo.exceptions import UserError`",
+        "odoo-exception-warning",
+        CHECK_DESCRIPTION,
+    ),
+    "R8180": (
+        'Consider merging classes inherited to "%s" from %s.',
+        "consider-merging-classes-inherited",
+        CHECK_DESCRIPTION,
+    ),
+    "W8103": ('Translation method _("string") in fields is not necessary.', "translation-field", CHECK_DESCRIPTION),
+    "W8105": ('attribute "%s" deprecated', "attribute-deprecated", CHECK_DESCRIPTION),
+    "W8106": ('Missing `super` call in "%s" method.', "method-required-super", CHECK_DESCRIPTION),
+    "W8110": ("Missing `return` (`super` is used) in method %s.", "missing-return", CHECK_DESCRIPTION),
+    "W8111": (
         'Field parameter "%s" is no longer supported. Use "%s" instead.',
         "renamed-field-parameter",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "W%d12" % settings.BASE_NOMODULE_ID: ('"eval" referenced detected.', "eval-referenced", settings.DESC_DFLT),
-    "W%d13"
-    % settings.BASE_NOMODULE_ID: (
-        "The attribute string is redundant. " "String parameter equal to name of variable",
+    "W8113": (
+        "The attribute string is redundant. String parameter equal to name of variable",
         "attribute-string-redundant",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "W%d14"
-    % settings.BASE_NOMODULE_ID: (
+    "W8114": (
         'Website "%s" in manifest key is not a valid URI',
         "website-manifest-key-not-valid-uri",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "W%d15"
-    % settings.BASE_NOMODULE_ID: (
+    "W8115": (
         'Translatable term in "%s" contains variables. Use %s instead',
         "translation-contains-variable",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "W%d16" % settings.BASE_NOMODULE_ID: ("Print used. Use `logger` instead.", "print-used", settings.DESC_DFLT),
-    "W%d20"
-    % settings.BASE_NOMODULE_ID: (
-        "Translation method _(%s) is using positional string printf formatting. "
-        'Use named placeholder `_("%%(placeholder)s")` instead.',
+    "W8116": ("Print used. Use `logger` instead.", "print-used", CHECK_DESCRIPTION),
+    "W8120": (
+        "Translation method _(%s) is using positional string printf "
+        'formatting. Use named placeholder `_("%%(placeholder)s")` instead.',
         "translation-positional-used",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "W%d21"
-    % settings.BASE_NOMODULE_ID: (
-        "Context overridden using dict. " "Better using kwargs `with_context(**%s)` or `with_context(key=value)`",
+    "W8121": (
+        "Context overridden using dict. Better using kwargs `with_context(**%s)` or `with_context(key=value)`",
         "context-overridden",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "W%d25"
-    % settings.BASE_NOMODULE_ID: (
+    "W8125": (
         'The file "%s" is duplicated %d times from manifest key "%s"',
         "manifest-data-duplicated",
-        settings.DESC_DFLT,
+        CHECK_DESCRIPTION,
     ),
-    "F%d01" % settings.BASE_NOMODULE_ID: ('File "%s": "%s" not found.', "resource-not-exist", settings.DESC_DFLT),
+    "W8138": (
+        "pass into block except. If you really need to use the pass consider logging that exception",
+        "except-pass",
+        CHECK_DESCRIPTION,
+    ),
+    "W8150": (
+        'Same Odoo module absolute import. You should use relative import with "." instead of "odoo.addons.%s"',
+        "odoo-addons-relative-import",
+        CHECK_DESCRIPTION,
+    ),
 }
 
 DFTL_MANIFEST_REQUIRED_KEYS = ["license"]
@@ -241,20 +239,20 @@ DFTL_MANIFEST_REQUIRED_AUTHORS = ["Odoo Community Association (OCA)"]
 DFTL_MANIFEST_DEPRECATED_KEYS = ["description"]
 DFTL_LICENSE_ALLOWED = [
     "AGPL-3",
-    "GPL-2",
     "GPL-2 or any later version",
-    "GPL-3",
+    "GPL-2",
     "GPL-3 or any later version",
+    "GPL-3",
     "LGPL-3",
+    "OEEL-1",
     "Other OSI approved licence",
     "Other proprietary",
-    "OEEL-1",
 ]
 DFTL_DEVELOPMENT_STATUS_ALLOWED = [
     "Alpha",
     "Beta",
-    "Production/Stable",
     "Mature",
+    "Production/Stable",
 ]
 DFTL_ATTRIBUTE_DEPRECATED = [
     "_columns",
@@ -262,31 +260,30 @@ DFTL_ATTRIBUTE_DEPRECATED = [
     "length",
 ]
 DFTL_METHOD_REQUIRED_SUPER = [
-    "create",
-    "write",
-    "read",
-    "unlink",
     "copy",
+    "create",
+    "default_get",
+    "read",
     "setUp",
     "setUpClass",
     "tearDown",
     "tearDownClass",
-    "default_get",
+    "unlink",
+    "write",
 ]
 DFTL_CURSOR_EXPR = [
-    "self.env.cr",
+    "cr",  # old api
     "self._cr",  # new api
     "self.cr",  # controllers and test
-    "cr",  # old api
+    "self.env.cr",
 ]
 DFTL_ODOO_EXCEPTIONS = [
-    # Extracted from openerp/exceptions.py of 8.0 and master
+    # Extracted from odoo/exceptions.py of 16.0 and master
     "AccessDenied",
     "AccessError",
-    "DeferredException",
+    "CacheMiss",
     "except_orm",
     "MissingError",
-    "QWebException",
     "RedirectWarning",
     "UserError",
     "ValidationError",
@@ -294,11 +291,11 @@ DFTL_ODOO_EXCEPTIONS = [
 ]
 DFTL_NO_MISSING_RETURN = [
     "__init__",
+    "_register_hook",
     "setUp",
     "setUpClass",
     "tearDown",
     "tearDownClass",
-    "_register_hook",
 ]
 FIELDS_METHOD = {
     "Many2many": 4,
@@ -330,72 +327,31 @@ DFTL_EXTERNAL_REQUEST_TIMEOUT_METHODS = [
     "suds.client.Client",
     "urllib.request.urlopen",
 ]
+# Regex used from https://github.com/translate/translate/blob/9de0d72437/translate/filters/checks.py#L50-L62  # noqa
+PRINTF_PATTERN = re.compile(
+    r"""
+        %(                          # initial %
+        (?P<boost_ord>\d+)%         # boost::format style variable order, like %1%
+        |
+              (?:(?P<ord>\d+)\$|    # variable order, like %1$s
+              \((?P<key>\w+)\))?    # Python style variables, like %(var)s
+        (?P<fullvar>
+            [+#-]*                  # flags
+            (?:\d+)?                # width
+            (?:\.\d+)?              # precision
+            (hh\|h\|l\|ll)?         # length formatting
+            (?P<type>[\w@]))        # type (%s, %d, etc.)
+        )""",
+    re.VERBOSE,
+)
 
 
-class NoModuleChecker(misc.PylintOdooChecker):
+class OdooAddons(BaseChecker):
 
     _from_imports = None
-    name = settings.CFG_SECTION
+    name = "odoolint"
     msgs = ODOO_MSGS
     options = (
-        (
-            "manifest_required_authors",
-            {
-                "type": "csv",
-                "metavar": "<comma separated values>",
-                "default": DFTL_MANIFEST_REQUIRED_AUTHORS,
-                "help": "Author names, at least one is required in manifest file.",
-            },
-        ),
-        (
-            "manifest_required_author",
-            {
-                "type": "string",
-                "metavar": "<string>",
-                "default": "",
-                "help": (
-                    "Name of author required in manifest file. "
-                    "This parameter is deprecated use "
-                    '"manifest_required_authors" instead.'
-                ),
-            },
-        ),
-        (
-            "manifest_required_keys",
-            {
-                "type": "csv",
-                "metavar": "<comma separated values>",
-                "default": DFTL_MANIFEST_REQUIRED_KEYS,
-                "help": "List of keys required in manifest file, " + "separated by a comma.",
-            },
-        ),
-        (
-            "manifest_deprecated_keys",
-            {
-                "type": "csv",
-                "metavar": "<comma separated values>",
-                "default": DFTL_MANIFEST_DEPRECATED_KEYS,
-                "help": "List of keys deprecated in manifest file, " + "separated by a comma.",
-            },
-        ),
-        (
-            "license_allowed",
-            {
-                "type": "csv",
-                "metavar": "<comma separated values>",
-                "default": DFTL_LICENSE_ALLOWED,
-                "help": "List of license allowed in manifest file, " + "separated by a comma.",
-            },
-        ),
-        (
-            "development_status_allowed",
-            {
-                "type": "csv",
-                "metavar": "<comma separated values>",
-                "default": DFTL_DEVELOPMENT_STATUS_ALLOWED,
-                "help": "List of development status allowed in manifest file, " + "separated by a comma.",
-            },
-        ),
         (
             "attribute_deprecated",
             {
@@ -403,6 +359,15 @@ class NoModuleChecker(misc.PylintOdooChecker):
                 "metavar": "<comma separated values>",
                 "default": DFTL_ATTRIBUTE_DEPRECATED,
                 "help": "List of attributes deprecated, " + "separated by a comma.",
+            },
+        ),
+        (
+            "cursor_expr",
+            {
+                "type": "csv",
+                "metavar": "<comma separated values>",
+                "default": DFTL_CURSOR_EXPR,
+                "help": "List of cursor expr separated by a comma.",
             },
         ),
         (
@@ -422,12 +387,59 @@ class NoModuleChecker(misc.PylintOdooChecker):
             },
         ),
         (
-            "method_required_super",
+            "development_status_allowed",
             {
                 "type": "csv",
                 "metavar": "<comma separated values>",
-                "default": DFTL_METHOD_REQUIRED_SUPER,
-                "help": "List of methods where call to `super` is required." + "separated by a comma.",
+                "default": DFTL_DEVELOPMENT_STATUS_ALLOWED,
+                "help": "List of development status allowed in manifest file, " + "separated by a comma.",
+            },
+        ),
+        (
+            "external_request_timeout_methods",
+            {
+                "type": "csv",
+                "metavar": "<comma separated values>",
+                "default": DFTL_EXTERNAL_REQUEST_TIMEOUT_METHODS,
+                "help": "List of library.method that must have a timeout "
+                "parameter defined, separated by a comma. "
+                'e.g. "requests.get,requests.post"',
+            },
+        ),
+        (
+            "license_allowed",
+            {
+                "type": "csv",
+                "metavar": "<comma separated values>",
+                "default": DFTL_LICENSE_ALLOWED,
+                "help": "List of license allowed in manifest file, " + "separated by a comma.",
+            },
+        ),
+        (
+            "manifest_deprecated_keys",
+            {
+                "type": "csv",
+                "metavar": "<comma separated values>",
+                "default": DFTL_MANIFEST_DEPRECATED_KEYS,
+                "help": "List of keys deprecated in manifest file, " + "separated by a comma.",
+            },
+        ),
+        (
+            "manifest_required_authors",
+            {
+                "type": "csv",
+                "metavar": "<comma separated values>",
+                "default": DFTL_MANIFEST_REQUIRED_AUTHORS,
+                "help": "Author names, at least one is required in manifest file.",
+            },
+        ),
+        (
+            "manifest_required_keys",
+            {
+                "type": "csv",
+                "metavar": "<comma separated values>",
+                "default": DFTL_MANIFEST_REQUIRED_KEYS,
+                "help": "List of keys required in manifest file, " + "separated by a comma.",
             },
         ),
         (
@@ -442,30 +454,12 @@ class NoModuleChecker(misc.PylintOdooChecker):
             },
         ),
         (
-            "cursor_expr",
+            "method_required_super",
             {
                 "type": "csv",
                 "metavar": "<comma separated values>",
-                "default": DFTL_CURSOR_EXPR,
-                "help": "List of cursor expr separated by a comma.",
-            },
-        ),
-        (
-            "odoo_exceptions",
-            {
-                "type": "csv",
-                "metavar": "<comma separated values>",
-                "default": DFTL_ODOO_EXCEPTIONS,
-                "help": "List of odoo exceptions separated by a comma.",
-            },
-        ),
-        (
-            "valid_odoo_versions",
-            {
-                "type": "csv",
-                "metavar": "<comma separated values>",
-                "default": misc.DFTL_VALID_ODOO_VERSIONS,
-                "help": "List of valid odoo versions separated by a comma.",
+                "default": DFTL_METHOD_REQUIRED_SUPER,
+                "help": "List of methods where call to `super` is required." + "separated by a comma.",
             },
         ),
         (
@@ -478,17 +472,47 @@ class NoModuleChecker(misc.PylintOdooChecker):
             },
         ),
         (
-            "external_request_timeout_methods",
+            "odoo_exceptions",
             {
                 "type": "csv",
                 "metavar": "<comma separated values>",
-                "default": DFTL_EXTERNAL_REQUEST_TIMEOUT_METHODS,
-                "help": "List of library.method that must have a timeout "
-                "parameter defined, separated by a comma. "
-                'e.g. "requests.get,requests.post"',
+                "default": DFTL_ODOO_EXCEPTIONS,
+                "help": "List of odoo exceptions separated by a comma.",
+            },
+        ),
+        (
+            "readme_template_url",
+            {
+                "type": "string",
+                "metavar": "<string>",
+                "default": misc.DFTL_README_TMPL_URL,
+                "help": "URL of README.rst template file",
+            },
+        ),
+        (
+            "valid_odoo_versions",
+            {
+                "type": "csv",
+                "metavar": "<comma separated values>",
+                "default": misc.DFTL_VALID_ODOO_VERSIONS,
+                "help": "List of valid odoo versions separated by a comma.",
             },
         ),
     )
+
+    def close(self):
+        """Final process get all cached values and add messages"""
+        for (manifest_path, odoo_class_inherit), nodes in self._odoo_inherit_items.items():
+            if len(nodes) <= 1:
+                continue
+            path_nodes = []
+            first_node = nodes.pop()
+            for node in nodes:
+                relpath = os.path.relpath(node.root().file, os.path.dirname(manifest_path))
+                path_nodes.append("%s:%d" % (relpath, node.lineno))
+            self.add_message(
+                "consider-merging-classes-inherited", node=first_node, args=(odoo_class_inherit, ", ".join(path_nodes))
+            )
 
     def visit_module(self, node):
         """Initizalize the cache to save the original library name
@@ -505,6 +529,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
 
     def open(self):
         super().open()
+        self._odoo_inherit_items = defaultdict(set)
         self.linter.config.deprecated_field_parameters = self.colon_list_to_dict(
             self.linter.config.deprecated_field_parameters
         )
@@ -668,36 +693,37 @@ class NoModuleChecker(misc.PylintOdooChecker):
                     if assign_node.targets[0].as_string() == node.as_string():
                         yield assign_node.value
 
-    @utils.only_required_for_messages("print-used")
-    def visit_print(self, node):
-        self.add_message("print-used", node=node)
-
     @utils.only_required_for_messages(
-        "translation-field",
-        "invalid-commit",
-        "method-compute",
-        "method-search",
-        "method-inverse",
-        "sql-injection",
         "attribute-string-redundant",
-        "renamed-field-parameter",
-        "translation-required",
-        "translation-contains-variable",
-        "print-used",
-        "translation-positional-used",
         "context-overridden",
         "external-request-timeout",
+        "invalid-commit",
+        "method-compute",
+        "method-inverse",
+        "method-search",
+        "print-used",
+        "renamed-field-parameter",
+        "sql-injection",
+        "translation-contains-variable",
+        "translation-field",
+        "translation-positional-used",
+        "translation-required",
     )
     def visit_call(self, node):
-        infer_node = utils.safe_infer(node.func)
-        if utils.is_builtin_object(infer_node) and infer_node.name == "print":
-            self.add_message("print-used", node=node)
+        if (
+            self.linter.is_message_enabled("print-used", node.lineno)
+            and isinstance(node.func, astroid.Name)
+            and node.func.name == "print"
+        ):
+            infer_node = utils.safe_infer(node.func)
+            if utils.is_builtin_object(infer_node) and infer_node.name == "print":
+                self.add_message("print-used", node=node)
         if (
             "fields" == self.get_func_lib(node.func)
             and isinstance(node.parent, astroid.Assign)
             and isinstance(node.parent.parent, astroid.ClassDef)
         ):
-            args = misc.join_node_args_kwargs(node)
+            args = self.join_node_args_kwargs(node)
             index = 0
             field_name = ""
             if (
@@ -837,8 +863,8 @@ class NoModuleChecker(misc.PylintOdooChecker):
             # translation-positional-used: Check "string to translate"
             # to check "%s %s..." used where the position can't be changed
             str2translate = arg.as_string()
-            printf_args = misc.WrapperModuleChecker._get_printf_str_args_kwargs(str2translate)
-            format_args = misc.WrapperModuleChecker._get_format_str_args_kwargs(str2translate)[0]
+            printf_args = self._get_printf_str_args_kwargs(str2translate)
+            format_args = self._get_format_str_args_kwargs(str2translate)[0]
             if isinstance(printf_args, tuple) and len(printf_args) >= 2 or len(format_args) >= 2:
                 # Return tuple for %s and dict for %(varname)s
                 # Check just the following cases "%s %s..."
@@ -861,7 +887,7 @@ class NoModuleChecker(misc.PylintOdooChecker):
             else self._from_imports.get(func_name)
         )
         if lib_original_func_name in self.linter.config.external_request_timeout_methods:
-            for argument in misc.join_node_args_kwargs(node):
+            for argument in self.join_node_args_kwargs(node):
                 if not isinstance(argument, astroid.Keyword):
                     continue
                 if argument.arg == "timeout":
@@ -870,43 +896,45 @@ class NoModuleChecker(misc.PylintOdooChecker):
                 self.add_message("external-request-timeout", node=node, args=(lib_original_func_name,))
 
     @utils.only_required_for_messages(
+        "development-status-allowed",
         "license-allowed",
         "manifest-author-string",
+        "manifest-data-duplicated",
         "manifest-deprecated-key",
+        "manifest-maintainers-list",
         "manifest-required-author",
         "manifest-required-key",
         "manifest-version-format",
+        "missing-readme",
         "resource-not-exist",
         "website-manifest-key-not-valid-uri",
-        "development-status-allowed",
-        "manifest-maintainers-list",
-        "manifest-data-duplicated",
     )
     def visit_dict(self, node):
-        if not os.path.basename(self.linter.current_file) in settings.MANIFEST_FILES or not isinstance(
+        if not os.path.basename(self.linter.current_file) in misc.MANIFEST_FILES or not isinstance(
             node.parent, astroid.Expr
         ):
             return
         manifest_dict = ast.literal_eval(node.as_string())
+        manifest_keys_nodes = {
+            key_node.value: key_node for key_node, _value in node.items if isinstance(key_node, astroid.Const)
+        }
 
         # Check author is a string
         author = manifest_dict.get("author", "")
         if not isinstance(author, str):
-            self.add_message("manifest-author-string", node=node)
+            self.add_message("manifest-author-string", node=manifest_keys_nodes.get("author") or node)
         else:
             # Check author required
             authors = {auth.strip() for auth in author.split(",")}
 
-            if self.linter.config.manifest_required_author:
-                # Support compatibility for deprecated attribute
-                required_authors = {self.linter.config.manifest_required_author}
-            else:
-                required_authors = set(self.linter.config.manifest_required_authors)
+            required_authors = set(self.linter.config.manifest_required_authors)
             if not authors & required_authors:
                 # None of the required authors is present in the manifest
                 # Authors will be printed as 'author1', 'author2', ...
                 authors_str = ", ".join(["'%s'" % auth for auth in required_authors])
-                self.add_message("manifest-required-author", node=node, args=(authors_str,))
+                self.add_message(
+                    "manifest-required-author", node=manifest_keys_nodes.get("author") or node, args=(authors_str,)
+                )
 
         # Check keys required
         required_keys = self.linter.config.manifest_required_keys
@@ -918,12 +946,16 @@ class NoModuleChecker(misc.PylintOdooChecker):
         deprecated_keys = self.linter.config.manifest_deprecated_keys
         for deprecated_key in deprecated_keys:
             if deprecated_key in manifest_dict:
-                self.add_message("manifest-deprecated-key", node=node, args=(deprecated_key,))
+                self.add_message(
+                    "manifest-deprecated-key",
+                    node=manifest_keys_nodes.get(deprecated_key) or node,
+                    args=(deprecated_key,),
+                )
 
         # Check license allowed
         license_str = manifest_dict.get("license", None)
         if license_str and license_str not in self.linter.config.license_allowed:
-            self.add_message("license-allowed", node=node, args=(license_str,))
+            self.add_message("license-allowed", node=manifest_keys_nodes.get("license") or node, args=(license_str,))
 
         # Check version format
         version_format = manifest_dict.get("version", "")
@@ -931,39 +963,53 @@ class NoModuleChecker(misc.PylintOdooChecker):
         if version_format and not formatrgx:
             self.add_message(
                 "manifest-version-format",
-                node=node,
+                node=manifest_keys_nodes.get("version") or node,
                 args=(version_format, self.linter.config.manifest_version_format_parsed),
             )
 
         # Check if resource exist
         # Check manifest-data-duplicated
         dirname = os.path.dirname(self.linter.current_file)
-        for key in DFTL_MANIFEST_DATA_KEYS:
+        for key in misc.MANIFEST_DATA_KEYS:
             for resource, coincidences in Counter(manifest_dict.get(key) or []).items():
                 if coincidences >= 2:
-                    self.add_message("manifest-data-duplicated", node=node, args=(resource, coincidences, key))
+                    self.add_message(
+                        "manifest-data-duplicated",
+                        node=manifest_keys_nodes.get(key) or node,
+                        args=(resource, coincidences, key),
+                    )
                 if os.path.isfile(os.path.join(dirname, resource)):
                     continue
-                self.add_message("resource-not-exist", node=node, args=(key, resource))
+                self.add_message("resource-not-exist", node=manifest_keys_nodes.get(key) or node, args=(key, resource))
+                # Check missing readme
+
+        if not any(os.path.isfile(os.path.join(dirname, readme)) for readme in misc.README_FILES):
+            self.add_message("missing-readme", args=(self.linter.config.readme_template_url,), node=node)
 
         # Check if the website is valid URI
         website = manifest_dict.get("website", "")
         url_is_valid = bool(validators.url(website, public=True))
         if website and "," not in website and not url_is_valid:
-            self.add_message("website-manifest-key-not-valid-uri", node=node, args=(website))
+            self.add_message(
+                "website-manifest-key-not-valid-uri", node=manifest_keys_nodes.get("website") or node, args=(website)
+            )
 
         # Check valid development_status values
         dev_status = manifest_dict.get("development_status")
         if dev_status and dev_status not in self.linter.config.development_status_allowed:
             valid_status = ", ".join(self.linter.config.development_status_allowed)
-            self.add_message("development-status-allowed", node=node, args=(dev_status, valid_status))
+            self.add_message(
+                "development-status-allowed",
+                node=manifest_keys_nodes.get("development_status") or node,
+                args=(dev_status, valid_status),
+            )
 
         # Check maintainers key is a list of strings
         maintainers = manifest_dict.get("maintainers")
         if maintainers and (
             not isinstance(maintainers, list) or any(not isinstance(item, str) for item in maintainers)
         ):
-            self.add_message("manifest-maintainers-list", node=node)
+            self.add_message("manifest-maintainers-list", node=manifest_keys_nodes.get("maintainers") or node)
 
     @utils.only_required_for_messages(
         "method-required-super",
@@ -1002,53 +1048,59 @@ class NoModuleChecker(misc.PylintOdooChecker):
         ):
             self.add_message("missing-return", node=node, args=(node.name))
 
-    @utils.only_required_for_messages("external-request-timeout")
+    @utils.only_required_for_messages(
+        "external-request-timeout", "odoo-addons-relative-import", "test-folder-imported"
+    )
     def visit_import(self, node):
         self._from_imports.update({alias or name: "%s" % name for name, alias in node.names})
+        self.check_odoo_relative_import(node)
+        self.check_folder_test_imported(node)
 
-    @utils.only_required_for_messages("openerp-exception-warning", "external-request-timeout")
+    @utils.only_required_for_messages(
+        "external-request-timeout", "odoo-addons-relative-import", "odoo-exception-warning", "test-folder-imported"
+    )
     def visit_importfrom(self, node):
-        if node.modname == "openerp.exceptions":
-            for (import_name, import_as_name) in node.names:
-                if import_name == "Warning" and import_as_name != "UserError":
-                    self.add_message("openerp-exception-warning", node=node)
+        if node.modname == "odoo.exceptions":
+            for import_name, _import_as_name in node.names:
+                if import_name == "Warning":
+                    self.add_message("odoo-exception-warning", node=node)
         self._from_imports.update({alias or name: "%s.%s" % (node.modname, name) for name, alias in node.names})
+        self.check_odoo_relative_import(node)
+        self.check_folder_test_imported(node)
 
-    @utils.only_required_for_messages("class-camelcase")
-    def visit_classdef(self, node):
-        camelized = self.camelize(node.name)
-        if camelized != node.name:
-            self.add_message("class-camelcase", node=node, args=(camelized, node.name))
-
-    @utils.only_required_for_messages("attribute-deprecated")
+    @utils.only_required_for_messages("attribute-deprecated", "consider-merging-classes-inherited")
     def visit_assign(self, node):
         node_left = node.targets[0]
         if (
-            isinstance(node.parent, astroid.ClassDef)
+            self.linter.is_message_enabled("attribute-deprecated", node.lineno)
+            and isinstance(node.parent, astroid.ClassDef)
             and isinstance(node_left, astroid.AssignName)
             and [1 for m in node.parent.basenames if "Model" in m]
         ):
             if node_left.name in self.linter.config.attribute_deprecated:
                 self.add_message("attribute-deprecated", node=node_left, args=(node_left.name,))
-
-    @utils.only_required_for_messages("eval-referenced")
-    def visit_name(self, node):
-        """Detect when a "bad" built-in is referenced."""
-        node_infer = utils.safe_infer(node)
-        if not utils.is_builtin_object(node_infer):
-            # Skip not builtin objects
-            return
-        if node_infer.name == "eval":
-            self.add_message("eval-referenced", node=node)
-
-    def camelize(self, string):
-        return re.sub(r"(?:^|_)(.)", lambda m: m.group(1).upper(), string)
-
-    def get_decorators_names(self, decorators):
-        nodes = []
-        if decorators:
-            nodes = decorators.nodes
-        return [getattr(decorator, "attrname", "") for decorator in nodes if decorator is not None]
+        if self.linter.is_message_enabled("consider-merging-classes-inherited", node.lineno):
+            node_left = node.targets[0]
+            if (
+                not isinstance(node_left, astroid.node_classes.AssignName)
+                or node_left.name not in ("_inherit", "_name")
+                or not isinstance(node.value, astroid.node_classes.Const)
+                or not isinstance(node.parent, astroid.ClassDef)
+            ):
+                return
+            if node_left.name == "_name":
+                node.parent.odoo_attribute_name = node.value.value
+                return
+            odoo_class_name = getattr(node.parent, "odoo_attribute_name", None)
+            odoo_class_inherit = node.value.value
+            if odoo_class_name and odoo_class_name != odoo_class_inherit:
+                # Skip _name='model.name' _inherit='other.model' because is valid
+                # TODO: Consider case where _inherit is assigned before to _name
+                return
+            node_dirpath = os.path.dirname(node.root().file)
+            manifest_path = misc.walk_up(node_dirpath, tuple(misc.MANIFEST_FILES), misc.top_path(node_dirpath))
+            if manifest_path:
+                self._odoo_inherit_items[(manifest_path, odoo_class_inherit)].add(node)
 
     def get_func_name(self, node):
         func_name = (
@@ -1105,3 +1157,141 @@ class NoModuleChecker(misc.PylintOdooChecker):
             expr_list.insert(0, node_expr.name)
         cursor_name = ".".join(expr_list)
         return cursor_name
+
+    def formatversion(self, version_string):
+        valid_odoo_versions = self.linter.config.valid_odoo_versions
+        valid_odoo_versions = "|".join(map(re.escape, valid_odoo_versions))
+        manifest_version_format = self.linter.config.manifest_version_format
+        self.linter.config.manifest_version_format_parsed = manifest_version_format.format(
+            valid_odoo_versions=valid_odoo_versions
+        )
+        return re.match(self.linter.config.manifest_version_format_parsed, version_string)
+
+    def join_node_args_kwargs(self, node):
+        """Method to join args and keywords
+        :param node: node to get args and keywords
+        :return: List of args
+        """
+        args = (getattr(node, "args", None) or []) + (getattr(node, "keywords", None) or [])
+        return args
+
+    @staticmethod
+    def _get_format_str_args_kwargs(format_str):
+        """Get dummy args and kwargs of a format string
+        e.g. format_str = '{} {} {variable}'
+            dummy args = (0, 0)
+            kwargs = {'variable': 0}
+        return args, kwargs
+        Motivation to use format_str.format(*args, **kwargs)
+        and validate if it was parsed correctly
+        """
+        format_str_args = []
+        format_str_kwargs = {}
+        placeholders = []
+        for line in format_str.splitlines():
+            try:
+                placeholders.extend(name for _, name, _, _ in string.Formatter().parse(line) if name is not None)
+            except ValueError:
+                continue
+            for placeholder in placeholders:
+                if placeholder == "":
+                    # unnumbered "{} {}"
+                    # append 0 to use max(0, 0, ...) == 0
+                    # and identify that all args are unnumbered vs numbered
+                    format_str_args.append(0)
+                elif placeholder.isdigit():
+                    # numbered "{0} {1} {2} {0}"
+                    # append +1 to use max(1, 2) and know the quantity of args
+                    # and identify that the args are numbered
+                    format_str_args.append(int(placeholder) + 1)
+                else:
+                    # named "{var0} {var1} {var2} {var0}"
+                    format_str_kwargs[placeholder] = 0
+        if format_str_args:
+            format_str_args = range(len(format_str_args)) if max(format_str_args) == 0 else range(max(format_str_args))
+        return format_str_args, format_str_kwargs
+
+    @staticmethod
+    def _get_printf_str_args_kwargs(printf_str):
+        """Get dummy args and kwargs of a printf string
+        e.g. printf_str = '%s %d'
+            dummy args = ('', 0)
+        e.g. printf_str = '%(var1)s %(var2)d'
+            dummy kwargs = {'var1': '', 'var2': 0}
+        return args or kwargs
+        Motivation to use printf_str % (args or kwargs)
+        and validate if it was parsed correctly
+        """
+        args = []
+        kwargs = {}
+
+        # Remove all escaped %%
+        printf_str = re.sub("%%", "", printf_str)
+        for line in printf_str.splitlines():
+            for match in PRINTF_PATTERN.finditer(line):
+                match_items = match.groupdict()
+                var = "" if match_items["type"] == "s" else 0
+                if match_items["key"] is None:
+                    args.append(var)
+                else:
+                    kwargs[match_items["key"]] = var
+        return tuple(args) or kwargs
+
+    @utils.only_required_for_messages("except-pass")
+    def visit_tryexcept(self, node):
+        """Visit block try except"""
+        for handler in node.handlers:
+            if not handler.name and len(handler.body) == 1 and isinstance(handler.body[0], astroid.node_classes.Pass):
+                self.add_message("except-pass", node=handler)
+
+    def _get_odoo_module_imported(self, node, manifest_path):
+        if hasattr(node.parent, "file"):
+            relpath = os.path.relpath(node.parent.file, os.path.dirname(manifest_path))
+            if os.path.dirname(relpath) == "tests":
+                # import errors rules don't apply to the test files
+                # since these files are loaded only when running tests
+                # and in such a case your
+                # module and their external dependencies are installed.
+                return []
+        odoo_module = []
+        if isinstance(node, astroid.ImportFrom) and "odoo.addons" in node.modname:
+            packages = node.modname.split(".")
+            if len(packages) >= 3:
+                # from odoo.addons.odoo_module import models
+                odoo_module.append(packages[2])
+            else:
+                # from odoo.addons import odoo_module
+                odoo_module.append(node.names[0][0])
+        elif isinstance(node, astroid.Import):
+            for name, _ in node.names:
+                if "odoo.addons" not in name and "odoo.addons" not in name:
+                    continue
+                packages = name.split(".")
+                if len(packages) >= 3:
+                    # import odoo.addons.odoo_module
+                    odoo_module.append(packages[2])
+        return odoo_module
+
+    def check_odoo_relative_import(self, node):
+        node_dirpath = os.path.dirname(node.root().file)
+        manifest_path = misc.walk_up(node_dirpath, tuple(misc.MANIFEST_FILES), misc.top_path(node_dirpath))
+        if not manifest_path:
+            return
+        odoo_module_name = os.path.basename(os.path.dirname(manifest_path))
+        if odoo_module_name in self._get_odoo_module_imported(node, manifest_path):
+            self.add_message("odoo-addons-relative-import", node=node, args=(odoo_module_name,))
+
+    def check_folder_test_imported(self, node):
+        if hasattr(node.parent, "file") and os.path.basename(node.parent.file) == "__init__.py":
+            package_names = []
+            if isinstance(node, astroid.ImportFrom):
+                if node.modname:
+                    # from .tests import test_file
+                    package_names = node.modname.split(".")[:1]
+                else:
+                    # from . import tests
+                    package_names = [name for name, alias in node.names]
+            elif isinstance(node, astroid.Import):
+                package_names = [name[0].split(".")[0] for name in node.names]
+            if "tests" in package_names:
+                self.add_message("test-folder-imported", node=node, args=(node.parent.name,))
