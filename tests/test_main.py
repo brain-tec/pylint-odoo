@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 from glob import glob
@@ -6,7 +7,7 @@ from tempfile import NamedTemporaryFile, gettempdir
 
 from pylint.lint import Run
 
-from pylint_odoo import misc
+from pylint_odoo import plugin
 
 EXPECTED_ERRORS = {
     "attribute-deprecated": 3,
@@ -38,10 +39,17 @@ EXPECTED_ERRORS = {
     "resource-not-exist": 4,
     "sql-injection": 21,
     "test-folder-imported": 3,
-    "translation-contains-variable": 10,
+    "translation-contains-variable": 11,
     "translation-field": 2,
-    "translation-positional-used": 7,
+    "translation-format-interpolation": 4,
+    "translation-format-truncated": 1,
+    "translation-fstring-interpolation": 1,
+    "translation-not-lazy": 21,
+    "translation-positional-used": 10,
     "translation-required": 15,
+    "translation-too-few-args": 1,
+    "translation-too-many-args": 1,
+    "translation-unsupported-format": 1,
     "use-vim-comment": 1,
     "website-manifest-key-not-valid-uri": 1,
 }
@@ -106,28 +114,45 @@ class MainTest(unittest.TestCase):
         real_errors = pylint_res.linter.stats.by_msg
         self.assertEqual(self.expected_errors, real_errors)
 
-    def test_25_checks_without_coverage(self):
-        """All odoolint errors vs found"""
-        # Some messages can be excluded as they are only applied on certain
-        # Odoo versions (not necessarily 8.0).
+    def test_25_checks_excluding_by_odoo_version(self):
+        """All odoolint errors vs found but excluding based on Odoo version"""
         excluded_msgs = {
-            "unnecessary-utf8-coding-comment",
-            "xml-deprecated-qweb-directive",
+            "translation-format-interpolation",
+            "translation-format-truncated",
+            "translation-fstring-interpolation",
+            "translation-not-lazy",
+            "translation-too-few-args",
+            "translation-too-many-args",
+            "translation-unsupported-format",
         }
-        extra_params = ["--valid_odoo_versions=8.0"]
-        pylint_res = self.run_pylint(self.paths_modules, extra_params)
-        msgs_found = pylint_res.linter.stats.by_msg.keys()
-        plugin_msgs = set(misc.get_plugin_msgs(pylint_res)) - excluded_msgs
-        test_missed_msgs = sorted(list(plugin_msgs - set(msgs_found)))
-        self.assertFalse(
-            test_missed_msgs, "Checks without test case: {test_missed_msgs}".format(test_missed_msgs=test_missed_msgs)
-        )
+        self.default_extra_params += ["--valid-odoo-versions=13.0"]
+        pylint_res = self.run_pylint(self.paths_modules)
+        real_errors = pylint_res.linter.stats.by_msg
+        expected_errors = self.expected_errors.copy()
+        for excluded_msg in excluded_msgs:
+            expected_errors.pop(excluded_msg)
+        expected_errors.update({"manifest-version-format": 6})
+        self.assertEqual(expected_errors, real_errors)
+
+    def test_35_checks_emiting_by_odoo_version(self):
+        """All odoolint errors vs found but see if were not excluded for valid odoo version"""
+        self.default_extra_params += ["--valid-odoo-versions=14.0"]
+        pylint_res = self.run_pylint(self.paths_modules)
+        real_errors = pylint_res.linter.stats.by_msg
+        expected_errors = self.expected_errors.copy()
+        expected_errors.update({"manifest-version-format": 6})
+        excluded_msgs = {
+            "translation-contains-variable",
+        }
+        for excluded_msg in excluded_msgs:
+            expected_errors.pop(excluded_msg)
+        self.assertEqual(expected_errors, real_errors)
 
     def test_85_valid_odoo_version_format(self):
-        """Test --manifest_version_format parameter"""
+        """Test --manifest-version-format parameter"""
         # First, run Pylint for version 8.0
         extra_params = [
-            r'--manifest_version_format="8\.0\.\d+\.\d+.\d+$"' '--valid_odoo_versions=""',
+            r'--manifest-version-format="8\.0\.\d+\.\d+.\d+$"' '--valid-odoo-versions=""',
             "--disable=all",
             "--enable=manifest-version-format",
         ]
@@ -139,7 +164,7 @@ class MainTest(unittest.TestCase):
         self.assertDictEqual(real_errors, expected_errors)
 
         # Now for version 11.0
-        extra_params[0] = r'--manifest_version_format="11\.0\.\d+\.\d+.\d+$"'
+        extra_params[0] = r'--manifest-version-format="11\.0\.\d+\.\d+.\d+$"'
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors = pylint_res.linter.stats.by_msg
         expected_errors = {
@@ -148,10 +173,10 @@ class MainTest(unittest.TestCase):
         self.assertDictEqual(real_errors, expected_errors)
 
     def test_90_valid_odoo_versions(self):
-        """Test --valid_odoo_versions parameter when it's '8.0' & '11.0'"""
+        """Test --valid-odoo-versions parameter when it's '8.0' & '11.0'"""
         # First, run Pylint for version 8.0
         extra_params = [
-            "--valid_odoo_versions=8.0",
+            "--valid-odoo-versions=8.0",
             "--disable=all",
             "--enable=manifest-version-format",
         ]
@@ -163,7 +188,7 @@ class MainTest(unittest.TestCase):
         self.assertDictEqual(real_errors, expected_errors)
 
         # Now for version 11.0
-        extra_params[0] = "--valid_odoo_versions=11.0"
+        extra_params[0] = "--valid-odoo-versions=11.0"
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors = pylint_res.linter.stats.by_msg
         expected_errors = {
@@ -172,12 +197,12 @@ class MainTest(unittest.TestCase):
         self.assertDictEqual(real_errors, expected_errors)
 
     def test_110_manifest_required_authors(self):
-        """Test --manifest_required_authors using a different author and
+        """Test --manifest-required-authors using a different author and
         multiple authors separated by commas
         """
         # First, run Pylint using a different author
         extra_params = [
-            "--manifest_required_authors=Vauxoo",
+            "--manifest-required-authors=Vauxoo",
             "--disable=all",
             "--enable=manifest-required-author",
         ]
@@ -189,14 +214,14 @@ class MainTest(unittest.TestCase):
         self.assertDictEqual(real_errors, expected_errors)
 
         # Then, run it using multiple authors
-        extra_params[0] = "--manifest_required_authors=Vauxoo,Other"
+        extra_params[0] = "--manifest-required-authors=Vauxoo,Other"
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors = pylint_res.linter.stats.by_msg
         expected_errors["manifest-required-author"] = 3
         self.assertDictEqual(real_errors, expected_errors)
 
         # Testing deprecated attribute
-        extra_params[0] = "--manifest_required_author=" "Odoo Community Association (OCA)"
+        extra_params[0] = "--manifest-required-author=" "Odoo Community Association (OCA)"
         pylint_res = self.run_pylint(self.paths_modules, extra_params)
         real_errors = pylint_res.linter.stats.by_msg
         expected_errors_deprecated = {
@@ -314,6 +339,33 @@ def fstring_no_sqli(self):
             real_errors = pylint_res.linter.stats.by_msg
             expected_errors.pop(disable_error)
             self.assertDictEqual(real_errors, expected_errors)
+
+    @staticmethod
+    def re_replace(sub_start, sub_end, substitution, content):
+        re_sub = re.compile(rf"^{re.escape(sub_start)}$.*^{re.escape(sub_end)}$", re.M | re.S)
+        if not re_sub.findall(content):
+            raise UserWarning("No matched content")
+        new_content = re_sub.sub(f"{sub_start}\n\n{substitution}\n\n{sub_end}", content)
+        return new_content
+
+    @unittest.skipIf(not os.environ.get("BUILD_README"), "BUILD_README environment variable not enabled")
+    def test_build_docstring(self):
+        messages_content = plugin.messages2md()
+        readme_path = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "README.md")
+        with open(readme_path, encoding="UTF-8") as f_readme:
+            readme_content = f_readme.read()
+
+        new_readme = self.re_replace(
+            "[//]: # (start-checks)", "[//]: # (end-checks)", messages_content, readme_content
+        )
+
+        with open(readme_path, "w", encoding="UTF-8") as f_readme:
+            f_readme.write(new_readme)
+        self.assertEqual(
+            readme_content,
+            new_readme,
+            "The README was updated! Don't panic only failing for CI purposes. Run the same test again.",
+        )
 
 
 if __name__ == "__main__":
