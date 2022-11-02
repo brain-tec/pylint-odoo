@@ -220,7 +220,7 @@ ODOO_MSGS = {
         CHECK_DESCRIPTION,
     ),
     "W8125": (
-        'The file "%s" is duplicated %d times from manifest key "%s"',
+        'The file "%s" is duplicated in lines %s from manifest key "%s"',
         "manifest-data-duplicated",
         CHECK_DESCRIPTION,
     ),
@@ -511,14 +511,18 @@ class OdooAddons(OdooBaseChecker, BaseChecker):
 
     def close(self):
         """Final process get all cached values and add messages"""
-        for (manifest_path, odoo_class_inherit), inh_nodes in self._odoo_inherit_items.items():
+        for (_manifest_path, odoo_class_inherit), inh_nodes in self._odoo_inherit_items.items():
+            # Skip _inherit='other.model' _name='model.name' because is valid
+            inh_nodes = {
+                inh_node for inh_node in inh_nodes if not getattr(inh_node.parent, "odoo_attribute_name", None)
+            }
             if len(inh_nodes) <= 1:
                 continue
             path_nodes = []
             first_node = inh_nodes.pop()
             for node in inh_nodes:
-                relpath = os.path.relpath(node.root().file, os.path.dirname(manifest_path))
-                path_nodes.append("%s:%d" % (relpath, node.lineno))
+                relpath = os.path.relpath(node.root().file, os.getcwd())
+                path_nodes.append("%s:%d:%d" % (relpath, node.lineno, node.col_offset))
             self.add_message(
                 "consider-merging-classes-inherited", node=first_node, args=(odoo_class_inherit, ", ".join(path_nodes))
             )
@@ -987,17 +991,27 @@ class OdooAddons(OdooBaseChecker, BaseChecker):
         # Check if resource exist
         # Check manifest-data-duplicated
         dirname = os.path.dirname(self.linter.current_file)
-        for key in misc.MANIFEST_DATA_KEYS:
+        for key in set(misc.MANIFEST_DATA_KEYS) & set(manifest_dict.keys()):
+            list_node = node.getitem(manifest_keys_nodes.get(key))
+            fname_str_nodes = defaultdict(list)
+            for str_node in getattr(list_node, "elts", []):
+                fname_str_nodes[str_node.value].append(str_node)
             for resource, coincidences in Counter(manifest_dict.get(key) or []).items():
+                fname_str_node = (
+                    fname_str_nodes.get(resource)[0] if len(fname_str_nodes.get(resource) or []) >= 1 else node
+                )
                 if coincidences >= 2:
+                    lines_str = ", ".join(
+                        f"{fname_str_node.lineno}" for fname_str_node in (fname_str_nodes.get(resource) or [])[1:]
+                    )
                     self.add_message(
                         "manifest-data-duplicated",
-                        node=manifest_keys_nodes.get(key) or node,
-                        args=(resource, coincidences, key),
+                        node=fname_str_node,
+                        args=(resource, lines_str, key),
                     )
                 if os.path.isfile(os.path.join(dirname, resource)):
                     continue
-                self.add_message("resource-not-exist", node=manifest_keys_nodes.get(key) or node, args=(key, resource))
+                self.add_message("resource-not-exist", node=fname_str_node, args=(key, resource))
                 # Check missing readme
 
         if not any(os.path.isfile(os.path.join(dirname, readme)) for readme in misc.README_FILES):
@@ -1112,7 +1126,6 @@ class OdooAddons(OdooBaseChecker, BaseChecker):
             odoo_class_inherit = node.value.value
             if odoo_class_name and odoo_class_name != odoo_class_inherit:
                 # Skip _name='model.name' _inherit='other.model' because is valid
-                # TODO: Consider case where _inherit is assigned before to _name
                 return
             node_dirpath = os.path.dirname(node.root().file)
             manifest_path = misc.walk_up(node_dirpath, tuple(misc.MANIFEST_FILES), misc.top_path(node_dirpath))

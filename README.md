@@ -7,7 +7,7 @@
 [![pypi-downloads-monthly](https://img.shields.io/pypi/dm/pylint-odoo.svg?style=flat)](https://pypi.python.org/pypi/pylint-odoo)
 [![supported-versions](https://img.shields.io/pypi/pyversions/pylint-odoo.svg)](https://pypi.org/project/pylint-odoo)
 [![wheel](https://img.shields.io/pypi/wheel/pylint-odoo.svg)](https://pypi.org/project/pylint-odoo)
-[![commits-since](https://img.shields.io/github/commits-since/OCA/pylint-odoo/v8.0.10.svg)](https://github.com/OCA/pylint-odoo/compare/v8.0.10...main)
+[![commits-since](https://img.shields.io/github/commits-since/OCA/pylint-odoo/v8.0.13.svg)](https://github.com/OCA/pylint-odoo/compare/v8.0.13...main)
 
 [//]: # (end-badges)
 
@@ -30,7 +30,7 @@ external-request-timeout | Use of external request method `%s` without timeout. 
 invalid-commit | Use of cr.commit() directly - More info https://github.com/OCA/odoo-community.org/blob/master/website/Contribution/CONTRIBUTING.rst#never-commit-the-transaction | E8102
 license-allowed | License "%s" not allowed in manifest file. | C8105
 manifest-author-string | The author key in the manifest file must be a string (with comma separated values) | E8101
-manifest-data-duplicated | The file "%s" is duplicated %d times from manifest key "%s" | W8125
+manifest-data-duplicated | The file "%s" is duplicated in lines %s from manifest key "%s" | W8125
 manifest-deprecated-key | Deprecated key "%s" in manifest file | C8103
 manifest-maintainers-list | The maintainers key in the manifest file must be a list of strings | E8104
 manifest-required-author | One of the following authors must be present in manifest: %s | C8101
@@ -83,7 +83,7 @@ Add to your ".pre-commit-config.yaml" configuration file the following input
 
 ```yaml
     - repo: https://github.com/OCA/pylint-odoo
-        rev: v8.0.10
+        rev: v8.0.13
         hooks:
         # Add to your .pylintrc file:
         # [MASTER]
