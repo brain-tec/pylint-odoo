@@ -7,7 +7,7 @@
 [![pypi-downloads-monthly](https://img.shields.io/pypi/dm/pylint-odoo.svg?style=flat)](https://pypi.python.org/pypi/pylint-odoo)
 [![supported-versions](https://img.shields.io/pypi/pyversions/pylint-odoo.svg)](https://pypi.org/project/pylint-odoo)
 [![wheel](https://img.shields.io/pypi/wheel/pylint-odoo.svg)](https://pypi.org/project/pylint-odoo)
-[![commits-since](https://img.shields.io/github/commits-since/OCA/pylint-odoo/v8.0.13.svg)](https://github.com/OCA/pylint-odoo/compare/v8.0.13...main)
+[![commits-since](https://img.shields.io/github/commits-since/OCA/pylint-odoo/v8.0.15.svg)](https://github.com/OCA/pylint-odoo/compare/v8.0.15...main)
 
 [//]: # (end-badges)
 
@@ -42,6 +42,7 @@ method-required-super | Missing `super` call in "%s" method. | W8106
 method-search | Name of search method should start with "_search_" | C8109
 missing-readme | Missing ./README.rst file. Template here: %s | C8112
 missing-return | Missing `return` (`super` is used) in method %s. | W8110
+no-wizard-in-models | No wizard class for model directory. See the complete structure https://github.com/OCA/odoo-community.org/blob/master/website/Contribution/CONTRIBUTING.rst#complete-structure | C8113
 no-write-in-compute | Compute method calling `write`. Use `update` instead. | E8135
 odoo-addons-relative-import | Same Odoo module absolute import. You should use relative import with "." instead of "odoo.addons.%s" | W8150
 odoo-exception-warning | `odoo.exceptions.Warning` is a deprecated alias to `odoo.exceptions.UserError` use `from odoo.exceptions import UserError` | R8101
@@ -83,7 +84,7 @@ Add to your ".pre-commit-config.yaml" configuration file the following input
 
 ```yaml
     - repo: https://github.com/OCA/pylint-odoo
-        rev: v8.0.13
+        rev: v8.0.15
         hooks:
         # Add to your .pylintrc file:
         # [MASTER]
