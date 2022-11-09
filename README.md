@@ -7,7 +7,7 @@
 [![pypi-downloads-monthly](https://img.shields.io/pypi/dm/pylint-odoo.svg?style=flat)](https://pypi.python.org/pypi/pylint-odoo)
 [![supported-versions](https://img.shields.io/pypi/pyversions/pylint-odoo.svg)](https://pypi.org/project/pylint-odoo)
 [![wheel](https://img.shields.io/pypi/wheel/pylint-odoo.svg)](https://pypi.org/project/pylint-odoo)
-[![commits-since](https://img.shields.io/github/commits-since/OCA/pylint-odoo/v8.0.15.svg)](https://github.com/OCA/pylint-odoo/compare/v8.0.15...main)
+[![commits-since](https://img.shields.io/github/commits-since/OCA/pylint-odoo/v8.0.16.svg)](https://github.com/OCA/pylint-odoo/compare/v8.0.16...main)
 
 [//]: # (end-badges)
 
@@ -22,6 +22,7 @@ Short Name | Description | Code
 --- | --- | ---
 attribute-deprecated | attribute "%s" deprecated | W8105
 attribute-string-redundant | The attribute string is redundant. String parameter equal to name of variable | W8113
+bad-builtin-groupby | Used builtin function `itertools.groupby`. Prefer `odoo.tools.groupby` instead. More info about https://github.com/odoo/odoo/issues/105376 | W8155
 consider-merging-classes-inherited | Consider merging classes inherited to "%s" from %s. | R8180
 context-overridden | Context overridden using dict. Better using kwargs `with_context(**%s)` or `with_context(key=value)` | W8121
 development-status-allowed | Manifest key development_status "%s" not allowed. Use one of: %s. | C8111
@@ -84,7 +85,7 @@ Add to your ".pre-commit-config.yaml" configuration file the following input
 
 ```yaml
     - repo: https://github.com/OCA/pylint-odoo
-        rev: v8.0.15
+        rev: v8.0.16
         hooks:
         # Add to your .pylintrc file:
         # [MASTER]
